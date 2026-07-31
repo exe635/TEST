@@ -45,7 +45,7 @@ local function RegisterScriptForAutoExecute()
     if queue_on_teleport then
         queue_on_teleport([[
             print("🔄 Auto-execution du script après téléport...")
-            loadstring(game:HttpGet("https://raw.githubusercontent.com/exe635/TsT-test/refs/heads/main/test?token=GHSAT0AAAAAAEEJ54F7B6TS256S4CWPOPB42TM3HDQ"))()
+            loadstring(game:HttpGet("https://raw.githubusercontent.com/exe635/TEST/refs/heads/main/TEST"))()
         ]])
         print("✅ Script enregistré pour auto-execution")
     else
