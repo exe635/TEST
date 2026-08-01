@@ -87,7 +87,7 @@ end
 local DebrisClient = Workspace.DebrisClient
 local Mineables = Workspace.Mineables
 
-local TeleportSpeed = 8
+local TeleportSpeed = 9
 local NextFrame = RunService.Heartbeat
 
 -- ÉTAT DU SCRIPT
