@@ -1,18 +1,20 @@
 -- ============================================
--- INITIALISATION SÉCURISÉE
+-- SCRIPT DE FARMING COMPLET V3
+-- AVEC AUTO-REJOIN INTELLIGENT (SANS REJOIN SUR MORT)
 -- ============================================
 
--- Récupérer les services
-local PathfindingService = game:GetService("PathfindingService");
-local RunService = game:GetService("RunService");
-local Workspace = game:GetService("Workspace");
-local Players = game:GetService("Players");
-local TeleportService = game:GetService("TeleportService");
-local HttpService = game:GetService("HttpService");
-local UserInputService = game:GetService("UserInputService");
-local GuiService = game:GetService("GuiService");
+-- 1. SERVICES
+local PathfindingService = game:GetService("PathfindingService")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+local GuiService = game:GetService("GuiService")
+local CoreGui = game:GetService("CoreGui")
+local TeleportService = game:GetService("TeleportService")
+local StarterGui = game:GetService("StarterGui")
 
--- ATTENDRE QUE LE JOUEUR SOIT DISPONIBLE
+-- 2. ATTENDRE LE JOUEUR
 local Player = nil
 local waitAttempts = 0
 while not Player and waitAttempts < 50 do
@@ -31,16 +33,14 @@ end
 print("✅ Joueur trouvé: " .. Player.Name)
 
 -- ============================================
--- AUTO-EXECUTION (comme Infinite Yield)
+-- AUTO-EXECUTION (après téléport)
 -- ============================================
 
 local KeepScriptRunning = true
-local TeleportCheck = false
+local IsFirstRun = true
 
--- Récupérer queue_on_teleport
-local queue_on_teleport = queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport)
+local queue_on_teleport = queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport) or (getgenv and getgenv().queue_on_teleport)
 
--- Fonction pour enregistrer le script en auto-execution
 local function RegisterScriptForAutoExecute()
     if queue_on_teleport then
         queue_on_teleport([[
@@ -53,27 +53,14 @@ local function RegisterScriptForAutoExecute()
     end
 end
 
--- Détecter les téléports pour auto-execution
-Player.OnTeleport:Connect(function(State)
-    if KeepScriptRunning and not TeleportCheck then
-        TeleportCheck = true
-        if queue_on_teleport then
-            queue_on_teleport([[
-                print("🔄 Auto-execution après téléport...")
-                loadstring(game:HttpGet("URL_DE_TON_SCRIPT"))()
-            ]])
-            print("✅ Auto-execution déclenchée")
-        end
-        task.wait(5)
-        TeleportCheck = false
-    end
+task.delay(8, function()
+    RegisterScriptForAutoExecute()
+    IsFirstRun = false
+    print("✅ Auto-execution activée (délai de 8s)")
 end)
 
--- Enregistrer le script
-RegisterScriptForAutoExecute()
-
 -- ============================================
--- COMMANDES STYLE INFINITE YIELD
+-- COMMANDES AUTO-EXECUTION
 -- ============================================
 
 _G.keepiy = function()
@@ -95,41 +82,21 @@ end
 -- VARIABLES GLOBALES
 -- ============================================
 
-local Characters = Workspace.Characters;
-local DebrisClient = Workspace.DebrisClient;
-local Mineables = Workspace.Mineables;
-local Entities = Workspace.Entities;
+local DebrisClient = Workspace.DebrisClient
+local Mineables = Workspace.Mineables
 
-local RaycastParameters = RaycastParams.new();
-RaycastParameters.FilterType = Enum.RaycastFilterType.Whitelist;
-RaycastParameters.FilterDescendantsInstances = {Entities};
-RaycastParameters.RespectCanCollide = true;
+local TeleportSpeed = 8
+local NextFrame = RunService.Heartbeat
 
-local TeleportSpeed = 8;
-local NextFrame = RunService.Heartbeat;
-
--- Variables d'état
-local IsReconnecting = false;
-local RejoinAttempts = 0;
-local MaxRejoinAttempts = 10;
-local IsDead = false;
-local IsScriptRunning = false;
-local MainLoopThread = nil;
-local LastDeathTime = 0;
-local RejoinCooldown = false;
-
--- Variables pour l'auto-rejoin intelligent
-local IsNetworkError = false;
-local IsClientDisconnect = false;
-local NetworkErrorTime = 0;
-local LastErrorMessage = "";
-local ReconnectAttempted = false;
+-- ÉTAT DU SCRIPT
+local IsScriptRunning = false
+local IsDead = false
+local LastDeathTime = 0
 
 -- ============================================
--- STATISTIQUES PERSISTANTES (dans _G)
+-- STATISTIQUES PERSISTANTES
 -- ============================================
 
--- Initialiser les stats globales si elles n'existent pas
 if not _G.FarmStats then
     _G.FarmStats = {
         GiftsCollected = 0,
@@ -138,22 +105,13 @@ if not _G.FarmStats then
         LastReportTime = tick(),
         Coins = 0,
         DeathCount = 0,
-        RejoinCount = 0,
         KickCount = 0,
-        NetworkErrors = 0
+        NetworkErrors = 0,
+        RejoinCount = 0
     }
 end
 
--- Créer un alias local pour les stats
 local Stats = _G.FarmStats
-
--- Stockage des connexions
-local Connections = {
-    CharacterAdded = nil,
-    HumanoidDied = nil,
-    PlayerRemoving = nil,
-    ErrorMessageChanged = nil
-}
 
 -- ============================================
 -- CONFIGURATION WEBHOOK
@@ -163,16 +121,16 @@ local WebhookConfig = {
     Enabled = true,
     PingConfig = {
         UserID = "1532693233124249781",
-        OnRejoin = true,
-        OnRejoinSuccess = true,
-        OnRejoinFail = true,
         OnDeath = true,
         OnError = false,
         OnStart = false,
         OnGiftFound = false,
         OnGiftCollected = false,
         OnKick = true,
-        OnNetworkError = true
+        OnNetworkError = true,
+        OnRejoin = true,
+        OnRejoinSuccess = true,
+        OnRejoinFail = true
     },
     Colors = {
         Success = 0x00FF00,
@@ -180,12 +138,12 @@ local WebhookConfig = {
         Warning = 0xFFFF00,
         Info = 0x0099FF,
         Death = 0xFF4400,
-        Rejoin = 0xFF00FF,
         Start = 0x00FFAA,
         Stop = 0xFF4444,
         Stats = 0x9B59B6,
         Kick = 0xFF5500,
-        NetworkError = 0xFFAA00
+        NetworkError = 0xFFAA00,
+        Rejoin = 0xFF00FF
     }
 }
 
@@ -261,7 +219,7 @@ local function SendWebhook(Message, Color, Title, Fields, ShouldPing)
             request = syn.request
         elseif http and http.request then
             request = http.request
-        elseif game:GetService("HttpService") and game:GetService("HttpService").PostAsync then
+        elseif HttpService and HttpService.PostAsync then
             local json = HttpService:JSONEncode(Data)
             return HttpService:PostAsync(WebhookConfig.URL, json, Enum.HttpContentType.ApplicationJson)
         else
@@ -284,10 +242,8 @@ local function SendWebhook(Message, Color, Title, Fields, ShouldPing)
     end)
     
     if success and response then
-        print("✅ Webhook envoyé")
         return true
     else
-        print("❌ Échec webhook")
         return false
     end
 end
@@ -339,104 +295,7 @@ local function GetCoins()
 end
 
 -- ============================================
--- FONCTION DE RAPPORT 5 MINUTES
--- ============================================
-
-local function SendPeriodicReport(force)
-    local currentTime = tick()
-    local timeSinceLastReport = currentTime - Stats.LastReportTime
-    
-    -- Si on force ou si 5 minutes sont passées
-    if not force and timeSinceLastReport < 300 then
-        local timeLeft = 300 - timeSinceLastReport
-        print(string.format("⏳ Prochain rapport dans %.0f secondes", timeLeft))
-        return false
-    end
-    
-    -- Mettre à jour le temps du dernier rapport
-    Stats.LastReportTime = currentTime
-    
-    local hoursPlayed = (currentTime - Stats.StartTime) / 3600
-    local playerName = Player and Player.Name or "Inconnu"
-    local serverId = game.JobId or "Inconnu"
-    
-    -- Récupérer les pièces
-    local coins, coinsText = GetCoins()
-    
-    local statusText = "✅ Actif"
-    if IsReconnecting then
-        statusText = "🔄 Reconnection..."
-    elseif IsDead then
-        statusText = "💀 Mort"
-    elseif not IsScriptRunning then
-        statusText = "❌ Arrêté"
-    end
-    
-    -- Formater les pièces
-    local formattedCoins = tostring(coins)
-    if coins >= 1000 then
-        formattedCoins = string.format("%d", coins):reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
-    end
-    
-    -- Vérifier si des cadeaux ont été collectés depuis le dernier rapport
-    local giftsMessage = ""
-    if Stats.GiftsThisPeriod > 0 then
-        giftsMessage = string.format("🎁 **Cadeaux cette période:** %d\n", Stats.GiftsThisPeriod)
-    else
-        giftsMessage = "🎁 **Cadeaux cette période:** 0 (aucun)\n"
-    end
-    
-    local message = string.format(
-        "**📊 RAPPORT - 5 MINUTES**\n\n" ..
-        "👤 **Joueur:** %s\n" ..
-        "🆔 **Server:** %s\n\n" ..
-        "📊 **STATISTIQUES:**\n" ..
-        "%s" ..
-        "🎁 **Total cumulé:** %d\n" ..
-        "💰 **Pièces:** %s\n" ..
-        "⏱️ **Temps joué:** %.1fh\n" ..
-        "💀 **Morts:** %d\n" ..
-        "🔄 **Reconnections:** %d\n" ..
-        "🚪 **Kicks:** %d\n" ..
-        "🌐 **Erreurs réseau:** %d\n\n" ..
-        "📡 **Status:** %s\n" ..
-        "⏰ **Heure:** %s",
-        playerName,
-        serverId,
-        giftsMessage,
-        Stats.GiftsCollected,
-        formattedCoins,
-        hoursPlayed,
-        Stats.DeathCount or 0,
-        Stats.RejoinCount or 0,
-        Stats.KickCount or 0,
-        Stats.NetworkErrors or 0,
-        statusText,
-        GetLocalTime()
-    )
-    
-    print(string.format("📊 ENVOI DU RAPPORT - Pièces: %s, Cadeaux période: %d", formattedCoins, Stats.GiftsThisPeriod))
-    
-    local success = SendWebhook(
-        message,
-        WebhookConfig.Colors.Stats,
-        "📊 Rapport 5 Minutes",
-        nil,
-        false
-    )
-    
-    if success then
-        print("✅ Rapport envoyé avec succès !")
-        Stats.GiftsThisPeriod = 0
-    else
-        print("❌ Échec de l'envoi du rapport !")
-    end
-    
-    return success
-end
-
--- ============================================
--- FONCTIONS PRINCIPALES DU FARM
+-- FONCTIONS DE TELEPORT (farming)
 -- ============================================
 
 local function ImprovedTeleport(Target)
@@ -464,15 +323,26 @@ local function ImprovedTeleport(Target)
 end;
 
 local function CanGoTo(Target)
-    local Path = PathfindingService:CreatePath({
-        AgentCanClimb = true;
-        WaypointSpacing = 1;
-    });
-    local HumanoidRootPart = Player.Character.HumanoidRootPart
-    Path:ComputeAsync(HumanoidRootPart.Position, Target);
-    local _, Points = pcall(Path.GetWaypoints, Path, HumanoidRootPart.Position);
-    return (_ and #Points > 0 and Points);
+    local ok, result = pcall(function()
+        local Path = PathfindingService:CreatePath({
+            AgentCanClimb = true;
+            WaypointSpacing = 1;
+        });
+        local HumanoidRootPart = Player.Character.HumanoidRootPart
+        Path:ComputeAsync(HumanoidRootPart.Position, Target);
+        return Path:GetWaypoints(HumanoidRootPart.Position);
+    end)
+    
+    if not ok then
+        return false
+    end
+    
+    return (#result > 0 and result)
 end;
+
+-- ============================================
+-- FONCTIONS DE FARM
+-- ============================================
 
 local function GetGifts()
     local Gifts = DebrisClient:GetChildren();
@@ -480,7 +350,15 @@ local function GetGifts()
     for _ = 1, Mdx do
         local Gift = Gifts[_];
         if (not Gift) then break; end;
-        if (Gift.Name ~= "GiftPrefab" or not Gift:FindFirstChild("Top") or not Gift:FindFirstChild("HitDetect") or not CanGoTo(Gift.HitDetect.Position)) then
+        local canGo = false
+        local ok, result = pcall(function()
+            return CanGoTo(Gift.HitDetect.Position)
+        end)
+        if ok and result then
+            canGo = true
+        end
+        
+        if (Gift.Name ~= "GiftPrefab" or not Gift:FindFirstChild("Top") or not Gift:FindFirstChild("HitDetect") or not canGo) then
             table.remove(Gifts, _);
             _ = _ - 1;
             Mdx = Mdx - 1;
@@ -493,15 +371,31 @@ local function GetGiftDistance(Gift)
     if (not Gift) then return math.huge; end;
     local HitDetect = Gift:FindFirstChild("HitDetect");
     if (not HitDetect) then return math.huge; end;
-    return (Player.Character.HumanoidRootPart.Position - HitDetect.Position).Magnitude;
+    local char = Player.Character
+    if not char then return math.huge end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return math.huge end
+    return (hrp.Position - HitDetect.Position).Magnitude;
 end;
 
 local function GetNearestGift()
     local Mineable = Mineables:GetChildren()[1];
-    if (Mineable and Mineable:FindFirstChild("Highlight") and CanGoTo(Mineable.Highlight.Position)) then
-        return Mineable;
+    if (Mineable and Mineable:FindFirstChild("Highlight")) then
+        local canGo = false
+        local ok, result = pcall(function()
+            return CanGoTo(Mineable.Highlight.Position)
+        end)
+        if ok and result then
+            canGo = true
+        end
+        if canGo then
+            return Mineable;
+        end
     end;
+    
     local Gifts = GetGifts();
+    if #Gifts == 0 then return nil end
+    
     local ClosestGift = Gifts[1];
     local ClosestDist = GetGiftDistance(ClosestGift);
 
@@ -518,38 +412,36 @@ local function GetNearestGift()
 end;
 
 local function Goto(Target, Gift)
-    local Path = PathfindingService:CreatePath({
-        AgentCanClimb = true;
-        WaypointSpacing = 1;
-    });
-    local HumanoidRootPart = Player.Character.HumanoidRootPart
-    Path:ComputeAsync(HumanoidRootPart.Position, Target);
-    local Points = Path:GetWaypoints(HumanoidRootPart.Position);
+    local ok, result = pcall(function()
+        local Path = PathfindingService:CreatePath({
+            AgentCanClimb = true;
+            WaypointSpacing = 1;
+        });
+        local HumanoidRootPart = Player.Character.HumanoidRootPart
+        Path:ComputeAsync(HumanoidRootPart.Position, Target);
+        return Path:GetWaypoints(HumanoidRootPart.Position);
+    end)
+    
+    if not ok then
+        return false
+    end
+    
+    local Points = result
+    if #Points == 0 then return false end
     
     for _ = 1, #Points do
         if (not Points[_ + 1]) then break; end;
         local New = Points[_].Position;
         local Next = Points[_ + 1].Position;
-        if ((HumanoidRootPart.Position - New).Magnitude > 10) then warn("AX") return; end;
+        local hrp = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
+        if not hrp then return false end
+        if ((hrp.Position - New).Magnitude > 10) then return false; end;
         ImprovedTeleport(Vector3.new(New.X, math.max(Next.Y, New.Y) + 3, New.Z));
     end;
 
-    if (#Points == 0) then return false; end;
     ImprovedTeleport(Points[#Points].Position + Vector3.new(0, 3, 0));
+    return true
 end;
-
-local function IsPlayerReallyDead()
-    local char = Player.Character;
-    if not char then return false; end
-    local humanoid = char:FindFirstChild("Humanoid");
-    if not humanoid then return false; end
-    -- Vérification plus robuste
-    if humanoid.Health <= 0 then return true; end
-    if humanoid:GetState() == Enum.HumanoidStateType.Dead then return true; end
-    -- Vérifier si le personnage est en train de tomber (mort imminente)
-    if humanoid:GetState() == Enum.HumanoidStateType.FallingDown then return true; end
-    return false;
-end
 
 local function IsCharacterLoaded()
     local char = Player.Character;
@@ -562,271 +454,93 @@ local function IsCharacterLoaded()
 end
 
 -- ============================================
--- AUTO-REJOIN
+-- FONCTION DE RAPPORT 5 MINUTES
 -- ============================================
 
-local function RejoinGame(reason)
-    if IsReconnecting then return end
-    if RejoinCooldown then 
-        print("⏳ Cooldown de reconnection en cours...")
-        return 
+local function SendPeriodicReport(force)
+    local currentTime = tick()
+    local timeSinceLastReport = currentTime - Stats.LastReportTime
+    
+    if not force and timeSinceLastReport < 300 then
+        local timeLeft = 300 - timeSinceLastReport
+        print(string.format("⏳ Prochain rapport dans %.0f secondes", timeLeft))
+        return false
     end
     
-    IsReconnecting = true
-    RejoinAttempts = RejoinAttempts + 1
-    Stats.RejoinCount = (Stats.RejoinCount or 0) + 1
+    Stats.LastReportTime = currentTime
     
-    local reasonText = reason == "kick" and "KICK" or "ERREUR RÉSEAU"
-    print(string.format("🔄 %s - Reconnection %d/%d", reasonText, RejoinAttempts, MaxRejoinAttempts))
+    local hoursPlayed = (currentTime - Stats.StartTime) / 3600
+    local playerName = Player and Player.Name or "Inconnu"
+    local serverId = game.JobId or "Inconnu"
     
-    SendWebhook(
-        string.format("🔄 %s - Tentative %d/%d", reasonText, RejoinAttempts, MaxRejoinAttempts),
-        WebhookConfig.Colors.Rejoin,
-        "🔄 Reconnection",
-        nil,
-        WebhookConfig.PingConfig.OnRejoin
+    local coins, coinsText = GetCoins()
+    
+    local statusText = "✅ Actif"
+    if IsDead then
+        statusText = "💀 Mort"
+    elseif not IsScriptRunning then
+        statusText = "❌ Arrêté"
+    end
+    
+    local formattedCoins = tostring(coins)
+    if coins >= 1000 then
+        formattedCoins = string.format("%d", coins):reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
+    end
+    
+    local giftsMessage = ""
+    if Stats.GiftsThisPeriod > 0 then
+        giftsMessage = string.format("🎁 **Cadeaux cette période:** %d\n", Stats.GiftsThisPeriod)
+    else
+        giftsMessage = "🎁 **Cadeaux cette période:** 0 (aucun)\n"
+    end
+    
+    local message = string.format(
+        "**📊 RAPPORT - 5 MINUTES**\n\n" ..
+        "👤 **Joueur:** %s\n" ..
+        "🆔 **Server:** %s\n\n" ..
+        "📊 **STATISTIQUES:**\n" ..
+        "%s" ..
+        "🎁 **Total cumulé:** %d\n" ..
+        "💰 **Pièces:** %s\n" ..
+        "⏱️ **Temps joué:** %.1fh\n" ..
+        "💀 **Morts:** %d\n" ..
+        "🚪 **Kicks:** %d\n" ..
+        "🌐 **Erreurs réseau:** %d\n" ..
+        "🔄 **Reconnections:** %d\n\n" ..
+        "📡 **Status:** %s\n" ..
+        "⏰ **Heure:** %s",
+        playerName,
+        serverId,
+        giftsMessage,
+        Stats.GiftsCollected,
+        formattedCoins,
+        hoursPlayed,
+        Stats.DeathCount or 0,
+        Stats.KickCount or 0,
+        Stats.NetworkErrors or 0,
+        Stats.RejoinCount or 0,
+        statusText,
+        GetLocalTime()
     )
     
-    if RejoinAttempts >= MaxRejoinAttempts then
-        SendWebhook(
-            "❌ Échec après " .. MaxRejoinAttempts .. " tentatives. Arrêt du script.",
-            WebhookConfig.Colors.Error,
-            "❌ Échec Critique",
-            nil,
-            WebhookConfig.PingConfig.OnRejoinFail
-        )
-        IsReconnecting = false
-        IsScriptRunning = false
-        _G.TMMXFarm = false
-        return
-    end
+    print(string.format("📊 ENVOI DU RAPPORT - Pièces: %s, Cadeaux période: %d", formattedCoins, Stats.GiftsThisPeriod))
     
-    -- Désactiver temporairement le script
-    IsScriptRunning = false
-    if MainLoopThread then
-        task.cancel(MainLoopThread)
-        MainLoopThread = nil
-    end
+    local success = SendWebhook(
+        message,
+        WebhookConfig.Colors.Stats,
+        "📊 Rapport 5 Minutes",
+        nil,
+        false
+    )
     
-    IsDead = true;
-    
-    -- Attendre que le joueur soit bien mort avant de teleporter
-    task.wait(2)
-    
-    local success = pcall(function()
-        TeleportService:Teleport(game.PlaceId, Player)
-    end)
-    
-    if not success then
-        print("❌ Échec du téléport, nouvelle tentative dans 5 secondes...")
-        IsReconnecting = false
-        RejoinCooldown = true
-        task.wait(5)
-        RejoinCooldown = false
-        RejoinGame(reason)
+    if success then
+        print("✅ Rapport envoyé avec succès !")
+        Stats.GiftsThisPeriod = 0
     else
-        print("✅ Téléportation déclenchée...")
-        IsNetworkError = false
-        ReconnectAttempted = false
-        -- La connexion CharacterAdded va gérer la suite
-    end
-end
-
--- ============================================
--- DÉTECTION DE KICK INTELLIGENTE
--- ============================================
-
-local function IsNetworkErrorType(errorMessage)
-    local networkKeywords = {
-        "connection lost", "lost connection", "lost connection to the game server",
-        "error code: 277", "277", "network", "internet", "offline",
-        "timeout", "timed out", "no connection", "connection closed",
-        "reset by peer", "broken pipe", "server unavailable",
-        "cannot connect", "connection refused", "network unreachable",
-        "failed to connect", "disconnected", "reconnect", "connection error"
-    }
-    
-    for _, keyword in ipairs(networkKeywords) do
-        if string.find(string.lower(errorMessage), string.lower(keyword)) then
-            return true
-        end
-    end
-    return false
-end
-
-local function IsClientInitiatedDisconnect(errorMessage)
-    local clientKeywords = {
-        "client initiated disconnect", "client initiated", "client disconnected",
-        "you left", "you have left", "disconnect requested",
-        "user initiated", "user requested", "you disconnected",
-        "you have disconnected"
-    }
-    
-    for _, keyword in ipairs(clientKeywords) do
-        if string.find(string.lower(errorMessage), string.lower(keyword)) then
-            return true
-        end
-    end
-    return false
-end
-
-local function IsKick(errorMessage)
-    local kickKeywords = {
-        "kicked", "you have been kicked", "you were kicked",
-        "banned", "you have been banned", "you were banned",
-        "removed from the game", "you have been removed",
-        "moderated", "you have been moderated",
-        "exploit", "cheating", "you are not allowed"
-    }
-    
-    for _, keyword in ipairs(kickKeywords) do
-        if string.find(string.lower(errorMessage), string.lower(keyword)) then
-            return true
-        end
-    end
-    return false
-end
-
-local function CheckRealDisconnect()
-    if not Players:FindFirstChild(Player.Name) then
-        return true
+        print("❌ Échec de l'envoi du rapport !")
     end
     
-    local success = pcall(function()
-        HttpService:GetAsync("https://www.roblox.com")
-    end)
-    
-    return not success
-end
-
--- Détection via ErrorMessageChanged
-GuiService.ErrorMessageChanged:Connect(function(errorMessage)
-    if errorMessage and errorMessage ~= "" and errorMessage ~= LastErrorMessage then
-        LastErrorMessage = errorMessage
-        print(string.format("⚠️ ERREUR GUI: %s", errorMessage))
-        
-        if IsClientInitiatedDisconnect(errorMessage) then
-            print("🚫 Déconnexion volontaire - PAS d'auto-rejoin")
-            IsClientDisconnect = true
-            return
-        end
-        
-        if IsNetworkErrorType(errorMessage) then
-            print("🌐 ERREUR RÉSEAU - Perte de connexion")
-            print("⏳ Attente de reconnexion...")
-            
-            IsNetworkError = true
-            NetworkErrorTime = tick()
-            ReconnectAttempted = false
-            
-            task.spawn(function()
-                local waitCount = 0
-                while waitCount < 30 do
-                    task.wait(1)
-                    waitCount = waitCount + 1
-                    
-                    if not CheckRealDisconnect() then
-                        print("✅ Connexion rétablie !")
-                        IsNetworkError = false
-                        return
-                    end
-                    
-                    if waitCount % 5 == 0 then
-                        print(string.format("⏳ Attente reconnexion... (%d/30s)", waitCount))
-                    end
-                end
-                
-                if IsNetworkError and not ReconnectAttempted then
-                    print("🚪 Toujours déconnecté après 30s - Auto-rejoin...")
-                    ReconnectAttempted = true
-                    if not IsReconnecting then
-                        Stats.NetworkErrors = (Stats.NetworkErrors or 0) + 1
-                        SendWebhook(
-                            "🌐 **Erreur réseau persistante**\nAuto-rejoin après 30 secondes",
-                            WebhookConfig.Colors.NetworkError,
-                            "🌐 Erreur Réseau",
-                            nil,
-                            WebhookConfig.PingConfig.OnNetworkError
-                        )
-                        RejoinGame("network_error")
-                    end
-                end
-            end)
-            return
-        end
-        
-        if IsKick(errorMessage) then
-            print("🚪 KICK DÉTECTÉ ! Auto-rejoin immédiat...")
-            if not IsReconnecting then
-                Stats.KickCount = (Stats.KickCount or 0) + 1
-                SendWebhook(
-                    "🚪 **KICK DÉTECTÉ !**\nAuto-rejoin immédiat",
-                    WebhookConfig.Colors.Kick,
-                    "🚪 Kick",
-                    nil,
-                    WebhookConfig.PingConfig.OnKick
-                )
-                RejoinGame("kick")
-            end
-            return
-        end
-        
-        if CheckRealDisconnect() then
-            print("🌐 Pas de connexion internet - Traité comme erreur réseau")
-            IsNetworkError = true
-            NetworkErrorTime = tick()
-        else
-            print("🚪 AUTRE ERREUR - Traité comme un kick")
-            if not IsReconnecting then
-                Stats.KickCount = (Stats.KickCount or 0) + 1
-                RejoinGame("kick")
-            end
-        end
-    end
-end)
-
--- Surveillance de connexion en arrière-plan
-task.spawn(function()
-    while true do
-        task.wait(10)
-        
-        if IsNetworkError and tick() - NetworkErrorTime > 30 and not ReconnectAttempted then
-            print("🚪 Erreur réseau persistante - Auto-rejoin...")
-            ReconnectAttempted = true
-            if not IsReconnecting then
-                Stats.NetworkErrors = (Stats.NetworkErrors or 0) + 1
-                RejoinGame("network_error")
-            end
-        end
-        
-        if IsNetworkError and not CheckRealDisconnect() then
-            print("✅ Connexion rétablie !")
-            IsNetworkError = false
-            ReconnectAttempted = false
-        end
-    end
-end)
-
-print("✅ Détection de kick intelligente activée")
-
--- ============================================
--- FONCTION DE MORT (PAS DE REJOIN)
--- ============================================
-
-local function HandleDeath()
-    if IsDead or IsReconnecting then return end
-    
-    local currentTime = tick()
-    -- Éviter les morts en boucle (cooldown de 2 secondes)
-    if currentTime - LastDeathTime < 2 then return end
-    LastDeathTime = currentTime
-    
-    IsDead = true
-    Stats.DeathCount = (Stats.DeathCount or 0) + 1
-    
-    print("💀 Joueur mort ! Le script attend le respawn... (PAS de rejoin)")
-    
-    -- PAS DE REJOIN POUR LES MORTS - On attend juste le respawn
+    return success
 end
 
 -- ============================================
@@ -834,59 +548,44 @@ end
 -- ============================================
 
 local function FarmGift()
-    -- Vérification de l'état du personnage
     local char = Player.Character
     if not char then 
-        print("⚠️ Personnage inexistant, attente...")
         return 
     end
     
     local humanoid = char:FindFirstChild("Humanoid")
     if not humanoid then return end
     
-    -- Vérifier si le joueur est mort
     if humanoid.Health <= 0 or humanoid:GetState() == Enum.HumanoidStateType.Dead then
-        HandleDeath()
-        return
-    end
-    
-    -- Si on est en train de se reconnecter, on attend
-    if IsReconnecting then
-        task.wait(1)
-        return
-    end
-    
-    -- Vérifier si le personnage est chargé
-    if not char:FindFirstChild("HumanoidRootPart") then
-        return
-    end
-    
-    -- Vérifier si le joueur est en train de tomber (mort imminente)
-    if humanoid:GetState() == Enum.HumanoidStateType.FallingDown then
-        print("⚠️ Joueur en train de tomber, surveillance...")
-        task.wait(0.5)
-        if humanoid.Health <= 0 then
-            HandleDeath()
+        if not IsDead then
+            IsDead = true
+            Stats.DeathCount = (Stats.DeathCount or 0) + 1
+            print("💀 Joueur mort ! Attente du respawn...")
+            SendWebhook(
+                "💀 **Joueur mort !**\nAttente du respawn...",
+                WebhookConfig.Colors.Death,
+                "💀 Mort",
+                nil,
+                WebhookConfig.PingConfig.OnDeath
+            )
         end
         return
     end
     
-    -- Si le joueur était mort mais est revenu
     if IsDead then
         IsDead = false
-        IsReconnecting = false
-        RejoinAttempts = 0
         print("✅ Joueur réanimé !")
-        SendWebhook(
-            "✅ Joueur réanimé !",
-            WebhookConfig.Colors.Success,
-            "✅ Réanimation",
-            nil,
-            false
-        )
     end
     
-    -- Rechercher et collecter le cadeau
+    if not char:FindFirstChild("HumanoidRootPart") then
+        return
+    end
+    
+    if humanoid:GetState() == Enum.HumanoidStateType.FallingDown then
+        task.wait(0.5)
+        return
+    end
+    
     local Gift = GetNearestGift();
     if not Gift then 
         return; 
@@ -897,7 +596,8 @@ local function FarmGift()
         return; 
     end;
     
-    if (Goto(HitDetect.Position, Gift) and Gift.Name ~= "GiftPrefab") then
+    local success = Goto(HitDetect.Position, Gift)
+    if success and Gift.Name ~= "GiftPrefab" then
         Stats.GiftsCollected = Stats.GiftsCollected + 1
         Stats.GiftsThisPeriod = Stats.GiftsThisPeriod + 1
         wait(3);
@@ -905,29 +605,24 @@ local function FarmGift()
 end;
 
 -- ============================================
--- BOUCLE PRINCIPALE
+-- BOUCLE PRINCIPALE DE FARM
 -- ============================================
 
-local function StartMainLoop()
+function StartMainLoop()
     if IsScriptRunning then
         return
     end
     
-    -- Vérifier que le personnage est valide avant de démarrer
     if not IsCharacterLoaded() then
         print("⚠️ Personnage non chargé, attente...")
         return
     end
     
     IsScriptRunning = true
-    _G.TMMXFarm = true;
     IsDead = false
-    IsReconnecting = false
-    RejoinAttempts = 0
     
     print("✅ Script démarré !")
     
-    -- Afficher le temps restant avant le prochain rapport
     local timeSinceLastReport = tick() - Stats.LastReportTime
     if timeSinceLastReport < 300 then
         local timeLeft = 300 - timeSinceLastReport
@@ -936,73 +631,53 @@ local function StartMainLoop()
         print("⏳ Un rapport va être envoyé prochainement")
     end
     
-    if MainLoopThread then
-        task.cancel(MainLoopThread)
-        MainLoopThread = nil
-    end
-    
-    MainLoopThread = task.spawn(function()
+    task.spawn(function()
         local loopCount = 0
-        while (_G.TMMXFarm and IsScriptRunning) do
+        while IsScriptRunning do
             RunService.Heartbeat:Wait();
             
-            -- Si on est en reconnection, on attend
-            if IsReconnecting then
-                task.wait(0.5)
-                continue
-            end
-            
-            -- Vérifier si le joueur existe toujours
             if not Players:FindFirstChild(Player.Name) then
-                print("🚪 Joueur disparu - Reconnection...")
-                RejoinGame("kick")
-                continue
+                print("🚪 Joueur disparu - Arrêt du script")
+                IsScriptRunning = false
+                break
             end
             
-            -- Exécuter le farm avec gestion d'erreur
             local success, err = pcall(FarmGift);
             if not success then
-                print("❌ Erreur FarmGift:", err)
+                if not string.find(tostring(err), "PathfindingService") then
+                    print("❌ Erreur FarmGift:", err)
+                end
                 task.wait(1)
             end
             
-            -- METTRE À JOUR LES PIÈCES RÉGULIÈREMENT
             if loopCount % 10 == 0 then
                 GetCoins()
             end
             
             loopCount = loopCount + 1
             
-            -- Vérifier si 5 minutes se sont écoulées
             if tick() - Stats.LastReportTime >= 300 then
                 SendPeriodicReport(false)
             end
         end
         IsScriptRunning = false
+        print("🛑 Script arrêté")
     end)
 end
 
-local function StopScript()
+function StopScript()
     print("🛑 Arrêt du script...")
     IsScriptRunning = false
     IsDead = false
-    _G.TMMXFarm = false
-    
-    if MainLoopThread then
-        task.cancel(MainLoopThread)
-        MainLoopThread = nil
-    end
-    
     print("✅ Script arrêté")
     print(string.format("📊 Stats sauvegardées: %d cadeaux au total", Stats.GiftsCollected))
 end
 
-local function RestartScript()
+function RestartScript()
     print("🔄 Redémarrage du script...")
     StopScript()
     task.wait(1)
     
-    -- Attendre que le personnage soit chargé
     local attempts = 0
     while attempts < 30 and not IsCharacterLoaded() do
         task.wait(0.2)
@@ -1012,84 +687,357 @@ local function RestartScript()
     if IsCharacterLoaded() then
         StartMainLoop()
     else
-        print("⚠️ Impossible de redémarrer, personnage non chargé")
-        -- Le CharacterAdded va gérer le redémarrage
+        print("⚠️ Impossible de redémarrer")
     end
 end
 
 -- ============================================
--- GESTION CHARACTERADDED
+-- GESTION CHARACTERADDED (pour le farming)
 -- ============================================
 
-local function OnCharacterAdded(character)
-    print("🔄 Nouveau personnage détecté !")
-    IsDead = false
+if Player.CharacterAdded then
+    Player.CharacterAdded:Connect(function(character)
+        print("🔄 Nouveau personnage détecté !")
+        IsDead = false
+        
+        task.wait(2)
+        if IsCharacterLoaded() then
+            RestartScript()
+        end
+    end)
+end
+
+-- ============================================
+-- ========== AUTO-REJOIN INTELLIGENT ==========
+-- ============================================
+
+-- Variables pour l'auto-rejoin
+local RejoinActive = true
+local IsReconnecting = false
+local RejoinAttempts = 0
+local LastRejoinTime = 0
+local RejoinDelay = 5
+local LastPopupCheck = 0
+local PopupCheckCooldown = 0.3
+local CachedPopup = false
+
+-- ============================================
+-- DÉTECTION DE DÉCONNEXION
+-- ============================================
+
+local function HasSystemError()
+    local guiService = GuiService
+    if guiService then
+        local errorMessage = guiService:FindFirstChild("ErrorMessage")
+        if errorMessage and errorMessage:IsA("TextLabel") then
+            local text = errorMessage.Text or ""
+            if text ~= "" then
+                return true
+            end
+        end
+    end
+    
+    local coreGui = CoreGui
+    if coreGui then
+        local errorMsg = coreGui:FindFirstChild("ErrorMessage")
+        if errorMsg and errorMsg:IsA("TextLabel") then
+            local text = errorMsg.Text or ""
+            if text ~= "" then
+                return true
+            end
+        end
+    end
+    
+    return false
+end
+
+local function HasTeleportFailedPopup()
+    local coreGui = CoreGui
+    if not coreGui then
+        return false
+    end
+    
+    local function searchForError(instance)
+        if not instance then return false end
+        if instance:IsA("TextLabel") then
+            local text = instance.Text or ""
+            if string.find(string.lower(text), "teleport failed") or
+               string.find(string.lower(text), "connection failed") or
+               string.find(string.lower(text), "error code") or
+               string.find(string.lower(text), "lost connection") then
+                return true
+            end
+        end
+        for _, child in ipairs(instance:GetChildren()) do
+            if searchForError(child) then
+                return true
+            end
+        end
+        return false
+    end
+    
+    return searchForError(coreGui)
+end
+
+local function HasErrorPopup()
+    local now = tick()
+    if now - LastPopupCheck < PopupCheckCooldown then
+        return CachedPopup
+    end
+    LastPopupCheck = now
+    
+    if HasSystemError() or HasTeleportFailedPopup() then
+        CachedPopup = true
+        return true
+    end
+    
+    CachedPopup = false
+    return false
+end
+
+local function IsOnDisconnectScreen()
+    local coreGui = CoreGui
+    if not coreGui then
+        return false
+    end
+    
+    local robloxGui = coreGui:FindFirstChild("RobloxGui")
+    if robloxGui and robloxGui:IsA("ScreenGui") then
+        if robloxGui:FindFirstChild("DisconnectFrame") or
+           robloxGui:FindFirstChild("ReconnectFrame") or
+           robloxGui:FindFirstChild("ConnectionLost") or
+           robloxGui:FindFirstChild("LeaveButton") or
+           robloxGui:FindFirstChild("ReconnectButton") then
+            return true
+        end
+    end
+    
+    return false
+end
+
+local function IsPlayerGone()
+    return not Players:FindFirstChild(Player.Name)
+end
+
+local function IsDisconnected()
+    if IsOnDisconnectScreen() then
+        return true
+    end
+    if IsPlayerGone() then
+        return true
+    end
+    if HasErrorPopup() then
+        return true
+    end
+    if not Workspace or not Workspace.Parent then
+        return true
+    end
+    return false
+end
+
+-- ============================================
+-- FONCTION REJOIN
+-- ============================================
+
+local function Rejoin()
+    if IsReconnecting then
+        print("⏳ Déjà en reconnection...")
+        return false
+    end
+    
+    if not RejoinActive then
+        return false
+    end
+    
+    if tick() - LastRejoinTime < RejoinDelay then
+        print(string.format("⏳ Cooldown: %.1f secondes", RejoinDelay - (tick() - LastRejoinTime)))
+        return false
+    end
+    
+    IsReconnecting = true
+    RejoinAttempts = RejoinAttempts + 1
+    LastRejoinTime = tick()
+    
+    print(string.format("🔄 Reconnection - Tentative %d", RejoinAttempts))
+    print("📡 Téléportation vers le jeu...")
+    
+    SendWebhook(
+        string.format("🔄 **Tentative de reconnection #%d**", RejoinAttempts),
+        WebhookConfig.Colors.Rejoin,
+        "🔄 Reconnection",
+        nil,
+        WebhookConfig.PingConfig.OnRejoin
+    )
+    
+    task.wait(1)
+    
+    local success, err = pcall(function()
+        TeleportService:Teleport(game.PlaceId, Player)
+    end)
+    
+    if not success then
+        print("❌ Échec du téléport:", err)
+        IsReconnecting = false
+        task.wait(3)
+        return Rejoin()
+    end
+    
+    print("✅ Téléportation déclenchée")
+    print("⏳ Attente du chargement...")
+    
+    local waitTime = 0
+    local maxWait = 40
+    
+    while waitTime < maxWait do
+        task.wait(0.5)
+        waitTime = waitTime + 1
+        
+        if HasErrorPopup() then
+            print("⚠️ Popup d'erreur détecté")
+            IsReconnecting = false
+            task.wait(2)
+            return Rejoin()
+        end
+        
+        if IsDisconnected() then
+            print("⏳ Toujours déconnecté...")
+            continue
+        end
+        
+        -- Vérifier si le jeu est chargé
+        if IsCharacterLoaded() and game:IsLoaded() then
+            print("✅ Reconnection réussie !")
+            Stats.RejoinCount = (Stats.RejoinCount or 0) + 1
+            SendWebhook(
+                string.format("✅ **Reconnection réussie !**\nTentative #%d", RejoinAttempts),
+                WebhookConfig.Colors.Success,
+                "✅ Reconnection Réussie",
+                nil,
+                WebhookConfig.PingConfig.OnRejoinSuccess
+            )
+            IsReconnecting = false
+            RejoinAttempts = 0
+            
+            -- Redémarrer le farming si arrêté
+            if not IsScriptRunning then
+                print("🔄 Redémarrage du farming...")
+                task.wait(2)
+                StartMainLoop()
+            end
+            return true
+        end
+    end
+    
+    print("⏰ Timeout - Nouvelle tentative...")
     IsReconnecting = false
-    RejoinAttempts = 0
-    IsNetworkError = false
-    ReconnectAttempted = false
-    
-    -- Nettoyer l'ancienne connexion de mort
-    if Connections.HumanoidDied then
-        pcall(function()
-            Connections.HumanoidDied:Disconnect()
-        end)
-        Connections.HumanoidDied = nil
-    end
-    
-    -- Attendre que le personnage soit complètement chargé
-    local attempts = 0
-    while attempts < 50 do
-        task.wait(0.1)
-        attempts = attempts + 1
-        local humanoid = character:FindFirstChild("Humanoid")
-        if humanoid and humanoid.Health > 0 and character:FindFirstChild("HumanoidRootPart") then
-            break
-        end
-    end
-    
-    if IsCharacterLoaded() then
-        print("✅ Personnage prêt !")
-        
-        -- Configurer la détection de mort sur le nouveau personnage
-        local humanoid = character:FindFirstChild("Humanoid")
-        if humanoid then
-            Connections.HumanoidDied = humanoid.Died:Connect(function()
-                print("💀 Événement Died déclenché !")
-                HandleDeath()
-            end)
-        end
-        
-        task.wait(1)
-        RestartScript()
-    else
-        print("⚠️ Personnage non complètement chargé")
-    end
+    task.wait(3)
+    return Rejoin()
 end
 
-local function SetupCharacterAdded()
-    if not Player then
-        print("⚠️ Player n'est pas disponible, attente...")
+-- ============================================
+-- SURVEILLANCE AUTO-REJOIN (en arrière-plan)
+-- ============================================
+
+-- Détection des erreurs via GuiService
+local LastErrorTime = 0
+
+GuiService.ErrorMessageChanged:Connect(function(errorMessage)
+    if errorMessage and errorMessage ~= "" then
+        local now = tick()
+        if now - LastErrorTime < 2 then
+            return
+        end
+        LastErrorTime = now
+        
+        print("⚠️ ERREUR GUI: " .. errorMessage)
+        
+        local lowerMsg = string.lower(errorMessage)
+        
+        if string.find(lowerMsg, "connection failed") or
+           string.find(lowerMsg, "lost connection") or
+           string.find(lowerMsg, "disconnected") or
+           string.find(lowerMsg, "teleport failed") or
+           string.find(lowerMsg, "http error") or
+           string.find(lowerMsg, "raiseteleportinitfailedevent") then
+            
+            -- Ne pas rejoin si mort
+            if not IsDead and not IsReconnecting and RejoinActive then
+                print("🔄 Lancement auto-rejoin dans 2 secondes...")
+                task.wait(2)
+                Rejoin()
+            end
+        end
+    end
+end)
+
+-- Surveillance périodique
+task.spawn(function()
+    while true do
+        task.wait(5)
+        
+        if IsReconnecting or not RejoinActive or IsDead then
+            continue
+        end
+        
+        if HasErrorPopup() then
+            print("⚠️ Popup d'erreur détecté (surveillance)")
+            task.wait(1)
+            Rejoin()
+        end
+        
+        if IsDisconnected() then
+            print("🔴 Déconnexion détectée (surveillance)")
+            task.wait(1)
+            Rejoin()
+        end
+    end
+end)
+
+-- Si le joueur est retiré (kick ou leave)
+Players.PlayerRemoving:Connect(function(player)
+    if player == Player and not IsReconnecting and RejoinActive and not IsDead then
+        print("🚪 Joueur en train de quitter...")
         task.wait(1)
-        return SetupCharacterAdded()
+        Rejoin()
     end
-    
-    if Connections.CharacterAdded then
-        pcall(function()
-            Connections.CharacterAdded:Disconnect()
-        end)
-        Connections.CharacterAdded = nil
-    end
-    
-    Connections.CharacterAdded = Player.CharacterAdded:Connect(OnCharacterAdded)
-    
-    print("✅ CharacterAdded configuré !")
+end)
+
+-- ============================================
+-- DÉTECTION DE KICK (pour statistiques et webhook)
+-- ============================================
+
+if GuiService then
+    GuiService.ErrorMessageChanged:Connect(function(errorMessage)
+        if errorMessage and errorMessage ~= "" then
+            local kickKeywords = {"kicked", "banned", "removed from the game"}
+            for _, keyword in ipairs(kickKeywords) do
+                if string.find(string.lower(errorMessage), string.lower(keyword)) then
+                    print("🚪 KICK DÉTECTÉ !")
+                    Stats.KickCount = (Stats.KickCount or 0) + 1
+                    SendWebhook(
+                        "🚪 **KICK DÉTECTÉ !**\nLe joueur a été expulsé du jeu.",
+                        WebhookConfig.Colors.Kick,
+                        "🚪 Kick",
+                        nil,
+                        WebhookConfig.PingConfig.OnKick
+                    )
+                    break
+                end
+            end
+        end
+    end)
 end
 
 -- ============================================
 -- COMMANDES
 -- ============================================
 
+-- Farming commands
+_G.StartFarming = StartMainLoop
+_G.StopFarming = StopScript
+_G.RestartFarming = RestartScript
+
+-- Webhook commands
 _G.SetWebhook = function(url)
     if not url or url == "" then
         print("❌ URL invalide !")
@@ -1146,36 +1094,62 @@ _G.TestPing = function()
     print(success and "✅ Test ping réussi !" or "❌ Test ping échoué !")
 end
 
-_G.TestKick = function()
-    print("🧪 TEST KICK - Simulation de kick...")
+-- Auto-rejoin commands
+_G.Rejoin = function()
     if IsReconnecting then
-        print("⚠️ Reconnection déjà en cours, ignore...")
+        print("⚠️ Déjà en reconnection")
         return
     end
-    RejoinGame("kick")
+    print("🔄 Reconnection forcée...")
+    Rejoin()
 end
 
-_G.StopFarming = StopScript
-_G.StartFarming = StartMainLoop
-_G.RestartFarming = RestartScript
+_G.ToggleRejoin = function()
+    RejoinActive = not RejoinActive
+    print("🔄 Auto-rejoin: " .. tostring(RejoinActive))
+end
 
+_G.ResetRejoin = function()
+    RejoinAttempts = 0
+    IsReconnecting = false
+    RejoinActive = true
+    print("✅ Tentatives de rejoin réinitialisées")
+end
+
+_G.CheckPopup = function()
+    local hasPopup = HasErrorPopup()
+    print("Popup d'erreur: " .. tostring(hasPopup))
+    return hasPopup
+end
+
+-- Status global (fusionné)
 _G.Status = function()
     local timeSinceLastReport = tick() - Stats.LastReportTime
     local timeLeft = math.max(0, 300 - timeSinceLastReport)
     local coins, text = GetCoins()
-    print("=== STATUT ===")
-    print("Script en cours: " .. tostring(IsScriptRunning))
-    print("Mort: " .. tostring(IsDead))
-    print("Reconnection: " .. tostring(IsReconnecting))
-    print("Total cadeaux: " .. Stats.GiftsCollected)
-    print("Cadeaux période: " .. Stats.GiftsThisPeriod)
+    local hasPopup = HasErrorPopup()
+    local disconnected = IsDisconnected()
+    local onScreen = IsOnDisconnectScreen()
+    
+    print("=== STATUT GLOBAL ===")
+    print("Script farming: " .. tostring(IsScriptRunning))
+    print("💀 Mort: " .. tostring(IsDead))
+    print("Personnage chargé: " .. tostring(IsCharacterLoaded()))
+    print("🎁 Total cadeaux: " .. Stats.GiftsCollected)
+    print("🎁 Cadeaux période: " .. Stats.GiftsThisPeriod)
     print("💀 Morts: " .. (Stats.DeathCount or 0))
     print("🔄 Reconnections: " .. (Stats.RejoinCount or 0))
     print("🚪 Kicks: " .. (Stats.KickCount or 0))
     print("🌐 Erreurs réseau: " .. (Stats.NetworkErrors or 0))
     print("💰 Pièces: " .. text)
-    print("Temps depuis dernier rapport: " .. string.format("%.0f secondes", timeSinceLastReport))
-    print("Prochain rapport dans: " .. string.format("%.0f secondes", timeLeft))
+    print("⏳ Prochain rapport dans: " .. string.format("%.0f secondes", timeLeft))
+    print("--- Auto-Rejoin ---")
+    print("Actif: " .. tostring(RejoinActive))
+    print("En cours: " .. tostring(IsReconnecting))
+    print("Tentatives: " .. RejoinAttempts .. " (illimité)")
+    print("Popup erreur: " .. tostring(hasPopup))
+    print("Écran déconnexion: " .. tostring(onScreen))
+    print("Déconnecté: " .. tostring(disconnected))
 end
 
 -- ============================================
@@ -1183,119 +1157,95 @@ end
 -- ============================================
 
 print("========================================")
-print("    SCRIPT DE FARMING AUTO-REJOIN V3")
-print("    (AUTO-EXECUTION INCLUSE)")
+print("    SCRIPT DE FARMING COMPLET V3")
+print("    AVEC AUTO-REJOIN INTELLIGENT")
 print("========================================")
 
-task.wait(1)
-_G.TestWebhook()
+print("🌐 Vérification initiale...")
+task.wait(2)
 
-SetupCharacterAdded()
-
--- Configurer la détection de mort sur le personnage actuel
-local function SetupDeathDetection()
-    local char = Player.Character
-    if char then
-        local humanoid = char:FindFirstChild("Humanoid")
-        if humanoid then
-            if Connections.HumanoidDied then
-                pcall(function()
-                    Connections.HumanoidDied:Disconnect()
-                end)
-            end
-            Connections.HumanoidDied = humanoid.Died:Connect(function()
-                print("💀 Événement Died déclenché !")
-                HandleDeath()
-            end)
-            print("✅ Détection de mort configurée")
-        end
+-- Vérifier si le personnage est déjà mort au démarrage
+local char = Player.Character
+if char then
+    local humanoid = char:FindFirstChild("Humanoid")
+    if humanoid and humanoid.Health <= 0 then
+        IsDead = true
+        print("💀 Joueur mort au démarrage - Attente du respawn")
     end
 end
 
--- Attendre que le personnage soit chargé
-local loadAttempts = 0
-while loadAttempts < 100 do
-    task.wait(0.1)
-    loadAttempts = loadAttempts + 1
-    if IsCharacterLoaded() then
-        break
-    end
-end
+print("⏳ Attente initiale de 3 secondes...")
+task.wait(3)
 
-if IsCharacterLoaded() then
-    print("✅ Personnage chargé !")
-    SetupDeathDetection()
-    task.wait(1)
+if IsDisconnected() then
+    print("⚠️ Déconnecté au démarrage, lancement du rejoin...")
+    task.wait(2)
+    Rejoin()
+elseif IsCharacterLoaded() then
+    print("✅ Jeu chargé, démarrage du farming...")
     StartMainLoop()
 else
-    print("⚠️ Personnage non chargé, attente de CharacterAdded...")
+    print("⏳ Jeu en cours de chargement...")
+    task.wait(5)
+    if IsCharacterLoaded() then
+        print("✅ Jeu chargé !")
+        StartMainLoop()
+    else
+        print("⚠️ Jeu pas complètement chargé, attente de CharacterAdded...")
+    end
 end
 
--- Tester la récupération des pièces
 task.wait(2)
 local coins, text = GetCoins()
 print(string.format("💰 Pièces détectées: %s", text))
 
--- Afficher le temps restant
-local timeSinceLastReport = tick() - Stats.LastReportTime
-if timeSinceLastReport < 300 then
-    local timeLeft = 300 - timeSinceLastReport
-    print(string.format("⏳ Prochain rapport dans %.0f secondes", timeLeft))
-else
-    print("⏳ Un rapport va être envoyé prochainement")
-end
-
 print("========================================")
-print("📌 Commandes:")
-print("  _G.GetCoins() - Voir les pièces actuelles")
-print("  _G.SendReport() - Envoyer un rapport manuel")
-print("  _G.Status() - Voir l'état")
-print("  _G.TestKick() - Tester l'auto-rejoin")
+print("📌 COMMANDES PRINCIPALES:")
+print("  _G.StartFarming() - Démarrer le farm")
+print("  _G.StopFarming() - Arrêter le farm")
+print("  _G.RestartFarming() - Redémarrer")
+print("  _G.Status() - Voir l'état détaillé")
+print("  _G.GetCoins() - Voir les pièces")
+print("  _G.SendReport() - Rapport manuel")
+print("========================================")
+print("📌 COMMANDES AUTO-REJOIN:")
+print("  _G.Rejoin() - Forcer une reconnection")
+print("  _G.ToggleRejoin() - Activer/Désactiver")
+print("  _G.ResetRejoin() - Réinitialiser les tentatives")
+print("  _G.CheckPopup() - Vérifier popup d'erreur")
+print("========================================")
+print("📌 COMMANDES WEBHOOK:")
+print("  _G.TestWebhook() - Tester le webhook")
+print("  _G.TestPing() - Tester le ping Discord")
+print("  _G.SetWebhook(url) - Configurer webhook")
+print("  _G.SetDiscordID(id) - Configurer ID Discord")
+print("  _G.DisableWebhook() - Désactiver webhook")
+print("  _G.EnableWebhook() - Activer webhook")
+print("========================================")
+print("📌 COMMANDES AUTO-EXECUTION:")
 print("  _G.keepiy() - Activer auto-execution")
 print("  _G.unkeepiy() - Désactiver auto-execution")
-print("  _G.togglekeepiy() - Alterner auto-execution")
-print("  _G.StopFarming() - Arrêter le script")
-print("  _G.StartFarming() - Démarrer le script")
-print("  _G.RestartFarming() - Redémarrer le script")
+print("  _G.togglekeepiy() - Alterner")
 print("========================================")
-print("✅ AUTO-EXECUTION ACTIVÉE (style Infinite Yield)")
-print("✅ AUTO-REJOIN INTELLIGENT:")
-print("   🚪 KICK → Auto-rejoin immédiat")
-print("   🌐 Erreur 277 → Attente 30s puis auto-rejoin")
-print("   🚫 Client initiated → PAS de rejoin")
-print("   💀 Mort → PAS de rejoin, attend respawn")
+print("✅ AUTO-REJOIN ACTIF (sans rejoin sur mort)")
+print("   🔄 Détection des erreurs réseau, kick, popups")
+print("   ⛔ Pas de rejoin en cas de mort (respawn normal)")
 print("========================================")
 
 -- ============================================
--- BOUCLE DE SURVIE AMÉLIORÉE
+-- BOUCLE DE SURVIE (si farming arrêté, on le relance)
 -- ============================================
 
 while true do
-    task.wait(60)
+    task.wait(5)
     
-    -- Vérifier et redémarrer si nécessaire
-    if not IsScriptRunning and not IsReconnecting and IsCharacterLoaded() then
-        print("⚠️ Script arrêté, redémarrage...")
+    if not IsScriptRunning and not IsDead and IsCharacterLoaded() and not IsReconnecting then
+        print("🔄 Redémarrage automatique du farming (boucle de survie)...")
         StartMainLoop()
-    end
-    
-    -- Vérifier si le joueur est mort (surveillance supplémentaire)
-    if not IsDead and not IsReconnecting and IsCharacterLoaded() then
-        local char = Player.Character
-        if char then
-            local humanoid = char:FindFirstChild("Humanoid")
-            if humanoid and humanoid.Health <= 0 then
-                print("💀 Détection de mort via boucle de survie !")
-                HandleDeath()
-            end
-        end
     end
     
     if not Player then
         print("⚠️ Player perdu !")
         Player = Players.LocalPlayer
-        if Player then
-            SetupCharacterAdded()
-        end
     end
 end
