@@ -1,6 +1,8 @@
 -- ============================================
 -- SCRIPT DE FARMING COMPLET V3
--- AVEC AUTO-REJOIN INTELLIGENT (SANS REJOIN SUR MORT)
+-- AVEC ANTI-DOUBLON ET GESTION PROPRE DU PERSONNAGE
+-- MIXTE : MINEABLES + GIFTS (priorité au plus proche)
+-- SANS AUCUN DELAI
 -- ============================================
 
 -- 1. SERVICES
@@ -92,6 +94,8 @@ local NextFrame = RunService.Heartbeat
 local IsScriptRunning = false
 local IsDead = false
 local LastDeathTime = 0
+local IsRestarting = false
+local IsCharacterChanging = false
 
 -- ============================================
 -- STATISTIQUES PERSISTANTES
@@ -341,7 +345,7 @@ local function CanGoTo(Target)
 end;
 
 -- ============================================
--- FONCTIONS DE FARM
+-- FONCTIONS DE FARM (MIXTE : MINEABLES + GIFTS)
 -- ============================================
 
 local function GetGifts()
@@ -378,37 +382,121 @@ local function GetGiftDistance(Gift)
     return (hrp.Position - HitDetect.Position).Magnitude;
 end;
 
-local function GetNearestGift()
-    local Mineable = Mineables:GetChildren()[1];
-    if (Mineable and Mineable:FindFirstChild("Highlight")) then
-        local canGo = false
-        local ok, result = pcall(function()
-            return CanGoTo(Mineable.Highlight.Position)
-        end)
-        if ok and result then
-            canGo = true
-        end
-        if canGo then
-            return Mineable;
-        end
-    end;
-    
-    local Gifts = GetGifts();
-    if #Gifts == 0 then return nil end
-    
-    local ClosestGift = Gifts[1];
-    local ClosestDist = GetGiftDistance(ClosestGift);
+-- ============================================
+-- FONCTION getnearestgifts() - MIXTE (priorité au plus proche)
+-- ============================================
 
-    for _ = 2, #Gifts do
-        local Gift = Gifts[_];
-        local Dist = GetGiftDistance(Gift);
-        if (Dist < ClosestDist and Dist > 4) then
-            ClosestDist = Dist;
-            ClosestGift = Gift;
-        end;
-    end;
+local function getnearestgifts()
+    local allTargets = {}
     
-    return ((ClosestDist ~= math.huge) and ClosestGift);
+    -- 1. Récupérer tous les Mineables disponibles
+    local mineables = Mineables:GetChildren()
+    for _, mineable in ipairs(mineables) do
+        if mineable and mineable:FindFirstChild("Highlight") then
+            local canGo = false
+            local ok, result = pcall(function()
+                return CanGoTo(mineable.Highlight.Position)
+            end)
+            if ok and result then
+                canGo = true
+            end
+            if canGo then
+                table.insert(allTargets, {
+                    instance = mineable,
+                    type = "mineable",
+                    hitDetect = mineable.Highlight
+                })
+            end
+        end
+    end
+    
+    -- 2. Récupérer tous les cadeaux (GiftPrefab)
+    local gifts = GetGifts()
+    for _, gift in ipairs(gifts) do
+        if gift and gift:FindFirstChild("HitDetect") then
+            table.insert(allTargets, {
+                instance = gift,
+                type = "gift",
+                hitDetect = gift.HitDetect
+            })
+        end
+    end
+    
+    -- 3. Si aucun target trouvé
+    if #allTargets == 0 then
+        return nil, "aucun"
+    end
+    
+    -- 4. Trouver le plus proche (peu importe le type)
+    local char = Player.Character
+    if not char then return nil, "aucun" end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil, "aucun" end
+    
+    local closest = allTargets[1]
+    local closestDist = (hrp.Position - closest.hitDetect.Position).Magnitude
+    
+    for i = 2, #allTargets do
+        local target = allTargets[i]
+        local dist = (hrp.Position - target.hitDetect.Position).Magnitude
+        if dist < closestDist and dist > 4 then
+            closestDist = dist
+            closest = target
+        end
+    end
+    
+    return closest.instance, closest.type
+end;
+
+-- ============================================
+-- FONCTION GetNearestGift - MIXTE
+-- ============================================
+
+local function GetNearestGift()
+    local gift, type = getnearestgifts();
+    
+    if not gift then
+        return nil;
+    end
+    
+    -- Récupérer le bon HitDetect selon le type
+    local HitDetect = nil
+    if type == "mineable" then
+        HitDetect = gift:FindFirstChild("Highlight")
+    elseif type == "gift" then
+        HitDetect = gift:FindFirstChild("HitDetect")
+    end
+    
+    if not HitDetect or not HitDetect:IsA("BasePart") then 
+        return nil; 
+    end
+    
+    return gift;
+end;
+
+-- ============================================
+-- FONCTION GetNearestGiftDistance (pour debug)
+-- ============================================
+
+local function GetNearestGiftDistance()
+    local gift, type = getnearestgifts();
+    if not gift then return math.huge, "aucun" end
+    
+    local char = Player.Character
+    if not char then return math.huge, type end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return math.huge, type end
+    
+    local HitDetect = nil
+    if type == "mineable" then
+        HitDetect = gift:FindFirstChild("Highlight")
+    elseif type == "gift" then
+        HitDetect = gift:FindFirstChild("HitDetect")
+    end
+    
+    if not HitDetect then return math.huge, type end
+    
+    return (hrp.Position - HitDetect.Position).Magnitude, type;
 end;
 
 local function Goto(Target, Gift)
@@ -489,9 +577,9 @@ local function SendPeriodicReport(force)
     
     local giftsMessage = ""
     if Stats.GiftsThisPeriod > 0 then
-        giftsMessage = string.format("🎁 **Cadeaux cette période:** %d\n", Stats.GiftsThisPeriod)
+        giftsMessage = string.format("🎁 **Cadeaux/Mineables cette période:** %d\n", Stats.GiftsThisPeriod)
     else
-        giftsMessage = "🎁 **Cadeaux cette période:** 0 (aucun)\n"
+        giftsMessage = "🎁 **Cadeaux/Mineables cette période:** 0 (aucun)\n"
     end
     
     local message = string.format(
@@ -523,7 +611,7 @@ local function SendPeriodicReport(force)
         GetLocalTime()
     )
     
-    print(string.format("📊 ENVOI DU RAPPORT - Pièces: %s, Cadeaux période: %d", formattedCoins, Stats.GiftsThisPeriod))
+    print(string.format("📊 ENVOI DU RAPPORT - Pièces: %s, Cadeaux/Mineables période: %d", formattedCoins, Stats.GiftsThisPeriod))
     
     local success = SendWebhook(
         message,
@@ -544,10 +632,15 @@ local function SendPeriodicReport(force)
 end
 
 -- ============================================
--- FONCTION PRINCIPALE DE FARM
+-- FONCTION PRINCIPALE DE FARM (SANS AUCUN DELAI)
 -- ============================================
 
 local function FarmGift()
+    -- Vérifier si le personnage est toujours valide
+    if IsCharacterChanging then
+        return
+    end
+    
     local char = Player.Character
     if not char then 
         return 
@@ -582,34 +675,49 @@ local function FarmGift()
     end
     
     if humanoid:GetState() == Enum.HumanoidStateType.FallingDown then
-        task.wait(0.5)
-        return
+        return -- PAS DE DELAI
     end
     
+    -- UTILISATION DE GetNearestGift (MIXTE)
     local Gift = GetNearestGift();
     if not Gift then 
         return; 
     end;
     
+    -- Détection du type de gift pour choisir le bon HitDetect
     local HitDetect = Gift:FindFirstChild("HitDetect") or Gift:FindFirstChild("Highlight");
     if not HitDetect or not HitDetect:IsA("BasePart") then 
         return; 
     end;
     
     local success = Goto(HitDetect.Position, Gift)
-    if success and Gift.Name ~= "GiftPrefab" then
+    if success then
         Stats.GiftsCollected = Stats.GiftsCollected + 1
         Stats.GiftsThisPeriod = Stats.GiftsThisPeriod + 1
-        wait(3);
+        -- AUCUN DELAI ICI
     end;
 end;
 
 -- ============================================
--- BOUCLE PRINCIPALE DE FARM
+-- BOUCLE PRINCIPALE DE FARM (SANS AUCUN DELAI)
 -- ============================================
 
+local MainLoopThread = nil
+
 function StartMainLoop()
+    -- Anti-doublon
     if IsScriptRunning then
+        print("⚠️ Script déjà en cours, ignoré")
+        return
+    end
+    
+    if IsRestarting then
+        print("⚠️ Redémarrage en cours, ignoré")
+        return
+    end
+    
+    if IsCharacterChanging then
+        print("⚠️ Changement de personnage en cours, ignoré")
         return
     end
     
@@ -618,10 +726,11 @@ function StartMainLoop()
         return
     end
     
+    -- Marquer comme en cours
     IsScriptRunning = true
     IsDead = false
     
-    print("✅ Script démarré !")
+    print("✅ Script démarré en mode MIXTE (SANS AUCUN DELAI) !")
     
     local timeSinceLastReport = tick() - Stats.LastReportTime
     if timeSinceLastReport < 300 then
@@ -631,9 +740,16 @@ function StartMainLoop()
         print("⏳ Un rapport va être envoyé prochainement")
     end
     
-    task.spawn(function()
+    -- Annuler l'ancien thread
+    if MainLoopThread then
+        task.cancel(MainLoopThread)
+        MainLoopThread = nil
+    end
+    
+    MainLoopThread = task.spawn(function()
         local loopCount = 0
         while IsScriptRunning do
+            -- Attendre UNIQUEMENT le heartbeat (pas de wait supplémentaires)
             RunService.Heartbeat:Wait();
             
             if not Players:FindFirstChild(Player.Name) then
@@ -642,25 +758,33 @@ function StartMainLoop()
                 break
             end
             
+            -- Si le personnage a changé, on arrête proprement
+            if IsCharacterChanging then
+                print("🔄 Personnage en cours de changement - Arrêt du script")
+                IsScriptRunning = false
+                break
+            end
+            
             local success, err = pcall(FarmGift);
             if not success then
-                if not string.find(tostring(err), "PathfindingService") then
+                if not string.find(tostring(err), "PathfindingService") and not string.find(tostring(err), "Workspace") then
                     print("❌ Erreur FarmGift:", err)
                 end
-                task.wait(1)
+                -- PAS DE DELAI ICI
             end
+            
+            loopCount = loopCount + 1
             
             if loopCount % 10 == 0 then
                 GetCoins()
             end
-            
-            loopCount = loopCount + 1
             
             if tick() - Stats.LastReportTime >= 300 then
                 SendPeriodicReport(false)
             end
         end
         IsScriptRunning = false
+        MainLoopThread = nil
         print("🛑 Script arrêté")
     end)
 end
@@ -669,15 +793,41 @@ function StopScript()
     print("🛑 Arrêt du script...")
     IsScriptRunning = false
     IsDead = false
+    
+    if MainLoopThread then
+        task.cancel(MainLoopThread)
+        MainLoopThread = nil
+    end
+    
     print("✅ Script arrêté")
-    print(string.format("📊 Stats sauvegardées: %d cadeaux au total", Stats.GiftsCollected))
+    print(string.format("📊 Stats sauvegardées: %d cadeaux/mineables au total", Stats.GiftsCollected))
 end
 
 function RestartScript()
+    -- Anti-doublon
+    if IsRestarting then
+        print("⚠️ Redémarrage déjà en cours, ignoré")
+        return
+    end
+    
+    if IsCharacterChanging then
+        print("⚠️ Changement de personnage en cours, ignoré")
+        return
+    end
+    
+    IsRestarting = true
     print("🔄 Redémarrage du script...")
-    StopScript()
+    
+    -- Arrêter proprement
+    IsScriptRunning = false
+    if MainLoopThread then
+        task.cancel(MainLoopThread)
+        MainLoopThread = nil
+    end
+    
     task.wait(1)
     
+    -- Attendre que le personnage soit chargé
     local attempts = 0
     while attempts < 30 and not IsCharacterLoaded() do
         task.wait(0.2)
@@ -685,24 +835,76 @@ function RestartScript()
     end
     
     if IsCharacterLoaded() then
+        -- Réinitialiser l'état
+        IsScriptRunning = false
+        IsDead = false
         StartMainLoop()
     else
         print("⚠️ Impossible de redémarrer")
     end
+    
+    IsRestarting = false
 end
 
 -- ============================================
--- GESTION CHARACTERADDED (pour le farming)
+-- GESTION CHARACTERADDED (arrête puis relance)
 -- ============================================
 
 if Player.CharacterAdded then
     Player.CharacterAdded:Connect(function(character)
-        print("🔄 Nouveau personnage détecté !")
+        print("🔄 NOUVEAU PERSONNAGE DÉTECTÉ !")
+        
+        -- Marquer le changement de personnage
+        IsCharacterChanging = true
+        
+        -- ARRÊTER COMPLÈTEMENT LE SCRIPT
+        if IsScriptRunning then
+            print("🛑 Arrêt du script en cours...")
+            IsScriptRunning = false
+            if MainLoopThread then
+                task.cancel(MainLoopThread)
+                MainLoopThread = nil
+            end
+        end
+        
+        -- Réinitialiser l'état de mort
         IsDead = false
         
+        print("⏳ Attente du chargement du nouveau personnage...")
+        
+        -- Attendre que le personnage soit vraiment prêt
         task.wait(2)
+        
+        -- Attendre que le Humanoid soit présent
+        local humanoid = character:WaitForChild("Humanoid", 5)
+        if humanoid then
+            -- Attendre que le personnage soit complètement chargé
+            local waitTime = 0
+            while waitTime < 30 and not IsCharacterLoaded() do
+                task.wait(0.2)
+                waitTime = waitTime + 1
+            end
+        end
+        
+        -- Fin du changement de personnage
+        IsCharacterChanging = false
+        
+        -- Vérifier si le personnage est chargé et prêt
         if IsCharacterLoaded() then
-            RestartScript()
+            print("✅ Nouveau personnage chargé !")
+            
+            -- Attendre un peu pour que tout se stabilise
+            task.wait(1)
+            
+            -- RELANCER LE SCRIPT
+            if not IsScriptRunning and not IsRestarting then
+                print("🔄 Relance du script avec le nouveau personnage...")
+                StartMainLoop()
+            else
+                print("⚠️ Script déjà en cours ou redémarrage en cours")
+            end
+        else
+            print("⚠️ Nouveau personnage pas complètement chargé")
         end
     end)
 end
@@ -918,8 +1120,8 @@ local function Rejoin()
             IsReconnecting = false
             RejoinAttempts = 0
             
-            -- Redémarrer le farming si arrêté
-            if not IsScriptRunning then
+            -- Redémarrer le farming si arrêté (avec anti-doublon)
+            if not IsScriptRunning and not IsRestarting and not IsCharacterChanging then
                 print("🔄 Redémarrage du farming...")
                 task.wait(2)
                 StartMainLoop()
@@ -960,8 +1162,8 @@ GuiService.ErrorMessageChanged:Connect(function(errorMessage)
            string.find(lowerMsg, "http error") or
            string.find(lowerMsg, "raiseteleportinitfailedevent") then
             
-            -- Ne pas rejoin si mort
-            if not IsDead and not IsReconnecting and RejoinActive then
+            -- Ne pas rejoin si mort ou changement de perso
+            if not IsDead and not IsReconnecting and RejoinActive and not IsCharacterChanging then
                 print("🔄 Lancement auto-rejoin dans 2 secondes...")
                 task.wait(2)
                 Rejoin()
@@ -975,7 +1177,7 @@ task.spawn(function()
     while true do
         task.wait(5)
         
-        if IsReconnecting or not RejoinActive or IsDead then
+        if IsReconnecting or not RejoinActive or IsDead or IsCharacterChanging then
             continue
         end
         
@@ -995,7 +1197,7 @@ end)
 
 -- Si le joueur est retiré (kick ou leave)
 Players.PlayerRemoving:Connect(function(player)
-    if player == Player and not IsReconnecting and RejoinActive and not IsDead then
+    if player == Player and not IsReconnecting and RejoinActive and not IsDead and not IsCharacterChanging then
         print("🚪 Joueur en train de quitter...")
         task.wait(1)
         Rejoin()
@@ -1122,7 +1324,65 @@ _G.CheckPopup = function()
     return hasPopup
 end
 
--- Status global (fusionné)
+-- ============================================
+-- COMMANDES GETNEARESTGIFTS (MIXTE)
+-- ============================================
+
+_G.GetNearestGiftInfo = function()
+    local gift, type = getnearestgifts();
+    if not gift then
+        print("❌ Aucun target disponible (Mineable ou Gift)")
+        return
+    end
+    
+    local distance, detectedType = GetNearestGiftDistance()
+    print(string.format("🎯 Target le plus proche:"))
+    print(string.format("  Type: %s", type or detectedType))
+    print(string.format("  Distance: %.2f studs", distance or 0))
+    if gift and gift.Name then
+        print(string.format("  Nom: %s", gift.Name))
+    end
+    if gift and gift.Parent then
+        print(string.format("  Parent: %s", gift.Parent.Name))
+    end
+end
+
+_G.ForceMineable = function()
+    local mineable = Mineables:GetChildren()[1]
+    if mineable then
+        print("✅ Mineable trouvé: " .. mineable.Name)
+        return mineable
+    else
+        print("❌ Aucun Mineable disponible")
+        return nil
+    end
+end
+
+_G.ListAllGifts = function()
+    local gifts = GetGifts()
+    print(string.format("📋 %d cadeaux disponibles:", #gifts))
+    for i, gift in ipairs(gifts) do
+        local dist = GetGiftDistance(gift)
+        print(string.format("  %d. %s - Distance: %.2f", i, gift.Name or "Sans nom", dist))
+    end
+end
+
+_G.ListAllMineables = function()
+    local mineables = Mineables:GetChildren()
+    print(string.format("📋 %d mineables disponibles:", #mineables))
+    for i, mineable in ipairs(mineables) do
+        if mineable and mineable:FindFirstChild("Highlight") then
+            local char = Player.Character
+            local dist = math.huge
+            if char and char:FindFirstChild("HumanoidRootPart") then
+                dist = (char.HumanoidRootPart.Position - mineable.Highlight.Position).Magnitude
+            end
+            print(string.format("  %d. %s - Distance: %.2f", i, mineable.Name or "Sans nom", dist))
+        end
+    end
+end
+
+-- Status global (fusionné avec infos getnearestgifts)
 _G.Status = function()
     local timeSinceLastReport = tick() - Stats.LastReportTime
     local timeLeft = math.max(0, 300 - timeSinceLastReport)
@@ -1131,12 +1391,22 @@ _G.Status = function()
     local disconnected = IsDisconnected()
     local onScreen = IsOnDisconnectScreen()
     
+    -- Infos getnearestgifts
+    local gift, type = getnearestgifts()
+    local giftDist = 0
+    if gift then
+        local dist, _ = GetNearestGiftDistance()
+        giftDist = dist
+    end
+    
     print("=== STATUT GLOBAL ===")
     print("Script farming: " .. tostring(IsScriptRunning))
     print("💀 Mort: " .. tostring(IsDead))
+    print("🔄 Redémarrage en cours: " .. tostring(IsRestarting))
+    print("🔄 Changement personnage: " .. tostring(IsCharacterChanging))
     print("Personnage chargé: " .. tostring(IsCharacterLoaded()))
-    print("🎁 Total cadeaux: " .. Stats.GiftsCollected)
-    print("🎁 Cadeaux période: " .. Stats.GiftsThisPeriod)
+    print("🎁 Total collectés (Mineables + Gifts): " .. Stats.GiftsCollected)
+    print("🎁 Collectés cette période: " .. Stats.GiftsThisPeriod)
     print("💀 Morts: " .. (Stats.DeathCount or 0))
     print("🔄 Reconnections: " .. (Stats.RejoinCount or 0))
     print("🚪 Kicks: " .. (Stats.KickCount or 0))
@@ -1150,6 +1420,13 @@ _G.Status = function()
     print("Popup erreur: " .. tostring(hasPopup))
     print("Écran déconnexion: " .. tostring(onScreen))
     print("Déconnecté: " .. tostring(disconnected))
+    print("--- GetNearestGifts (MIXTE) ---")
+    print("Target disponible: " .. tostring(gift ~= nil))
+    if gift then
+        print("Type: " .. tostring(type or "inconnu"))
+        print("Distance: " .. string.format("%.2f studs", giftDist))
+        print("Nom: " .. tostring(gift.Name))
+    end
 end
 
 -- ============================================
@@ -1158,7 +1435,9 @@ end
 
 print("========================================")
 print("    SCRIPT DE FARMING COMPLET V3")
-print("    AVEC AUTO-REJOIN INTELLIGENT")
+print("    MODE MIXTE (MINEABLES + GIFTS)")
+print("    PRIORITÉ AU PLUS PROCHE")
+print("    SANS AUCUN DELAI")
 print("========================================")
 
 print("🌐 Vérification initiale...")
@@ -1182,7 +1461,7 @@ if IsDisconnected() then
     task.wait(2)
     Rejoin()
 elseif IsCharacterLoaded() then
-    print("✅ Jeu chargé, démarrage du farming...")
+    print("✅ Jeu chargé, démarrage du farming en mode MIXTE (SANS DELAI)...")
     StartMainLoop()
 else
     print("⏳ Jeu en cours de chargement...")
@@ -1208,6 +1487,12 @@ print("  _G.Status() - Voir l'état détaillé")
 print("  _G.GetCoins() - Voir les pièces")
 print("  _G.SendReport() - Rapport manuel")
 print("========================================")
+print("📌 COMMANDES GETNEARESTGIFTS (MIXTE):")
+print("  _G.GetNearestGiftInfo() - Info du target le plus proche")
+print("  _G.ForceMineable() - Forcer la recherche Mineable")
+print("  _G.ListAllGifts() - Lister tous les cadeaux")
+print("  _G.ListAllMineables() - Lister tous les mineables")
+print("========================================")
 print("📌 COMMANDES AUTO-REJOIN:")
 print("  _G.Rejoin() - Forcer une reconnection")
 print("  _G.ToggleRejoin() - Activer/Désactiver")
@@ -1222,24 +1507,28 @@ print("  _G.SetDiscordID(id) - Configurer ID Discord")
 print("  _G.DisableWebhook() - Désactiver webhook")
 print("  _G.EnableWebhook() - Activer webhook")
 print("========================================")
-print("📌 COMMANDES AUTO-EXECUTION:")
-print("  _G.keepiy() - Activer auto-execution")
-print("  _G.unkeepiy() - Désactiver auto-execution")
-print("  _G.togglekeepiy() - Alterner")
-print("========================================")
-print("✅ AUTO-REJOIN ACTIF (sans rejoin sur mort)")
-print("   🔄 Détection des erreurs réseau, kick, popups")
-print("   ⛔ Pas de rejoin en cas de mort (respawn normal)")
+print("✅ OPTIMISATION :")
+print("  - Collecte les MINEABLES et les GIFTS")
+print("  - Priorité au plus proche (peu importe le type)")
+print("  - AUCUN DELAI (pas de wait, pas de task.wait)")
+print("  - Heartbeat uniquement pour la boucle")
 print("========================================")
 
 -- ============================================
--- BOUCLE DE SURVIE (si farming arrêté, on le relance)
+-- BOUCLE DE SURVIE (avec anti-doublon)
 -- ============================================
 
 while true do
     task.wait(5)
     
-    if not IsScriptRunning and not IsDead and IsCharacterLoaded() and not IsReconnecting then
+    -- Ne relancer que si :
+    -- 1. Le script n'est pas en cours
+    -- 2. Le joueur n'est pas mort
+    -- 3. Le personnage est chargé
+    -- 4. Pas en reconnection
+    -- 5. Pas en redémarrage
+    -- 6. Pas en changement de personnage
+    if not IsScriptRunning and not IsDead and IsCharacterLoaded() and not IsReconnecting and not IsRestarting and not IsCharacterChanging then
         print("🔄 Redémarrage automatique du farming (boucle de survie)...")
         StartMainLoop()
     end
