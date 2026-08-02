@@ -1,8 +1,6 @@
 -- ============================================
--- SCRIPT DE FARMING COMPLET V3
--- AVEC ANTI-DOUBLON ET GESTION PROPRE DU PERSONNAGE
--- MIXTE : MINEABLES + GIFTS (priorité au plus proche)
--- SANS AUCUN DELAI
+-- SCRIPT DE FARMING ULTRA RAPIDE V7
+-- VERSION COMPLÈTE - ZÉRO DÉLAI
 -- ============================================
 
 -- 1. SERVICES
@@ -28,14 +26,38 @@ while not Player and waitAttempts < 50 do
 end
 
 if not Player then
-    print("❌ ERREUR CRITIQUE: Impossible de récupérer le joueur !")
+    print("erreur critique: impossible de récupérer le joueur. Critical error: impossible to get the player.")
     return
 end
 
-print("✅ Joueur trouvé: " .. Player.Name)
+print("Joueur trouvé: - Player found: " .. Player.Name)
 
 -- ============================================
--- AUTO-EXECUTION (après téléport)
+-- VARIABLES GLOBALES DE PERSISTANCE
+-- ============================================
+if _G.AutoFarmEnabled == nil then
+    _G.AutoFarmEnabled = true
+end
+if _G.NeedRestart == nil then
+    _G.NeedRestart = false
+end
+
+-- ============================================
+-- VARIABLES DE GESTION DES PIÈCES
+-- ============================================
+local RoomHistory = {}
+local MaxRoomHistory = 10
+local LastRoomPosition = nil
+local RoomSwitchCount = 0
+local MaxSwitches = 1 -- Changement de pièce à chaque fois
+local CurrentRoomTarget = nil
+local RoomChangeCooldown = 0
+local RoomChangeCooldownTime = 1.5 -- secondes entre chaque changement de pièce
+local RoomDistanceThreshold = 150 -- Distance en studs pour considérer que c'est la même pièce
+local ForceRoomChange = false -- Force un changement de pièce
+
+-- ============================================
+-- AUTO-EXECUTION AMÉLIORÉE
 -- ============================================
 
 local KeepScriptRunning = true
@@ -47,18 +69,20 @@ local function RegisterScriptForAutoExecute()
     if queue_on_teleport then
         queue_on_teleport([[
             print("🔄 Auto-execution du script après téléport...")
+            _G.AutoFarmEnabled = true
+            _G.NeedRestart = true
             loadstring(game:HttpGet("https://raw.githubusercontent.com/exe635/TEST/refs/heads/main/TEST"))()
         ]])
-        print("✅ Script enregistré pour auto-execution")
+        print("Le script a bien été enregistré pour une auto execution. - The script has been saved for auto execution.")
     else
-        print("⚠️ queue_on_teleport non disponible")
+        print("queue_on_teleport non disponible, utilisation du fallback - queue_on_teleport unavailable, using fallback.")
     end
 end
 
 task.delay(8, function()
     RegisterScriptForAutoExecute()
     IsFirstRun = false
-    print("✅ Auto-execution activée (délai de 8s)")
+    print("Auto-execution activée (délai de 8s) - Auto execution activated. (delay 8s)")
 end)
 
 -- ============================================
@@ -66,28 +90,42 @@ end)
 -- ============================================
 
 _G.keepiy = function()
-    KeepScriptRunning = true
-    print("✅ Auto-execution activée")
+    _G.AutoFarmEnabled = true
+    _G.NeedRestart = true
+    print("Auto-execution activée - Auto-execution activated.")
 end
 
 _G.unkeepiy = function()
-    KeepScriptRunning = false
-    print("⛔ Auto-execution désactivée")
+    _G.AutoFarmEnabled = false
+    _G.NeedRestart = false
+    print("Auto-execution désactivée - Auto-execution disabled")
 end
 
 _G.togglekeepiy = function()
-    KeepScriptRunning = not KeepScriptRunning
-    print("🔄 Auto-execution: " .. tostring(KeepScriptRunning))
+    _G.AutoFarmEnabled = not _G.AutoFarmEnabled
+    _G.NeedRestart = _G.AutoFarmEnabled
+    print("Auto-execution: " .. tostring(_G.AutoFarmEnabled))
 end
 
 -- ============================================
--- VARIABLES GLOBALES
+-- RÉFÉRENCES
 -- ============================================
 
+local Characters = Workspace.Characters
 local DebrisClient = Workspace.DebrisClient
 local Mineables = Workspace.Mineables
+local Entities = Workspace.Entities
 
-local TeleportSpeed = 10
+local RaycastParameters = RaycastParams.new()
+RaycastParameters.FilterType = Enum.RaycastFilterType.Whitelist
+RaycastParameters.FilterDescendantsInstances = {Entities}
+RaycastParameters.RespectCanCollide = true
+
+-- ============================================
+-- VARIABLES
+-- ============================================
+
+local TeleportSpeed = 11.5
 local NextFrame = RunService.Heartbeat
 
 -- ÉTAT DU SCRIPT
@@ -96,6 +134,12 @@ local IsDead = false
 local LastDeathTime = 0
 local IsRestarting = false
 local IsCharacterChanging = false
+
+-- CACHE POUR VITESSE
+local CachedCharacter = nil
+local CachedHumanoid = nil
+local CachedHRP = nil
+local CacheTick = 0
 
 -- ============================================
 -- STATISTIQUES PERSISTANTES
@@ -111,7 +155,9 @@ if not _G.FarmStats then
         DeathCount = 0,
         KickCount = 0,
         NetworkErrors = 0,
-        RejoinCount = 0
+        RejoinCount = 0,
+        LoopCount = 0,
+        RoomSwitches = 0
     }
 end
 
@@ -158,12 +204,8 @@ local WebhookConfig = {
 local function GetDiscordTimestamp()
     local now = os.time()
     return string.format("%04d-%02d-%02dT%02d:%02d:%02dZ",
-        os.date("%Y", now),
-        os.date("%m", now),
-        os.date("%d", now),
-        os.date("%H", now),
-        os.date("%M", now),
-        os.date("%S", now)
+        os.date("%Y", now), os.date("%m", now), os.date("%d", now),
+        os.date("%H", now), os.date("%M", now), os.date("%S", now)
     )
 end
 
@@ -195,13 +237,11 @@ local function SendWebhook(Message, Color, Title, Fields, ShouldPing)
     
     local Data = {
         embeds = {{
-            title = Title or "📢 Notification",
+            title = Title or "Notification",
             description = PingText .. Message,
             color = Color or WebhookConfig.Colors.Info,
             fields = Fields or {},
-            footer = {
-                text = "Script Auto-Farm | " .. GetLocalTime()
-            },
+            footer = { text = "Script Auto-Farm | " .. GetLocalTime() },
             timestamp = GetDiscordTimestamp()
         }}
     }
@@ -299,245 +339,332 @@ local function GetCoins()
 end
 
 -- ============================================
--- FONCTIONS DE TELEPORT (farming)
+-- FONCTIONS DE TELEPORT
 -- ============================================
 
 local function ImprovedTeleport(Target)
-    if (typeof(Target) == "Instance" and Target:IsA("BasePart")) then Target = Target.Position; end;
-    if (typeof(Target) == "CFrame") then Target = Target.p end;
+    if (typeof(Target) == "Instance" and Target:IsA("BasePart")) then 
+        Target = Target.Position
+    end
+    if (typeof(Target) == "CFrame") then 
+        Target = Target.p
+    end
 
-    local HRP = (Player.Character and Player.Character:FindFirstChild("HumanoidRootPart"));
-    if (not HRP) then return; end;
+    local HRP = CachedHRP
+    if (not HRP) then 
+        local char = Player.Character
+        if char then
+            HRP = char:FindFirstChild("HumanoidRootPart")
+            CachedHRP = HRP
+        end
+        if not HRP then return end
+    end
 
-    local StartingPosition = HRP.Position;
-    local PositionDelta = (Target - StartingPosition);
-    local StartTime = tick();
-    local TotalDuration = (StartingPosition - Target).magnitude / TeleportSpeed;
+    local StartingPosition = HRP.Position
+    local PositionDelta = (Target - StartingPosition)
+    local StartTime = tick()
+    local TotalDuration = (StartingPosition - Target).magnitude / TeleportSpeed
 
-    repeat NextFrame:Wait();
-        local Delta = tick() - StartTime;
-        local Progress = math.min(Delta / TotalDuration, 1);
-        local MappedPosition = StartingPosition + (PositionDelta * Progress);
-        HRP.Velocity = Vector3.new();
-        HRP.CFrame = CFrame.new(MappedPosition);
-        if (HRP.Anchored) then return; end;
-    until (HRP.Position - Target).magnitude <= TeleportSpeed / 20;
-    HRP.Anchored = false;
-    HRP.CFrame = CFrame.new(Target);
-end;
+    repeat 
+        RunService.Heartbeat:Wait()
+        local Delta = tick() - StartTime
+        local Progress = math.min(Delta / TotalDuration, 1)
+        local MappedPosition = StartingPosition + (PositionDelta * Progress)
+        HRP.Velocity = Vector3.new()
+        HRP.CFrame = CFrame.new(MappedPosition)
+        if (HRP.Anchored) then return end
+    until (HRP.Position - Target).magnitude <= TeleportSpeed / 20
+    
+    HRP.Anchored = false
+    HRP.CFrame = CFrame.new(Target)
+end
+
+-- ============================================
+-- FONCTION CANGO TO
+-- ============================================
 
 local function CanGoTo(Target)
+    local HRP = CachedHRP
+    if not HRP then
+        local char = Player.Character
+        if char then
+            HRP = char:FindFirstChild("HumanoidRootPart")
+            CachedHRP = HRP
+        end
+        if not HRP then return false end
+    end
+    
     local ok, result = pcall(function()
         local Path = PathfindingService:CreatePath({
             AgentCanClimb = true;
             WaypointSpacing = 1;
-        });
-        local HumanoidRootPart = Player.Character.HumanoidRootPart
-        Path:ComputeAsync(HumanoidRootPart.Position, Target);
-        return Path:GetWaypoints(HumanoidRootPart.Position);
+        })
+        Path:ComputeAsync(HRP.Position, Target)
+        return Path:GetWaypoints(HRP.Position)
     end)
     
-    if not ok then
-        return false
-    end
-    
+    if not ok then return false end
     return (#result > 0 and result)
-end;
+end
 
 -- ============================================
--- FONCTIONS DE FARM (MIXTE : MINEABLES + GIFTS)
+-- FONCTION POUR DÉTERMINER SI DEUX POSITIONS SONT DANS LA MÊME PIÈCE
+-- ============================================
+
+local function IsSameRoom(pos1, pos2)
+    if not pos1 or not pos2 then return false end
+    local distance = (pos1 - pos2).Magnitude
+    return distance < RoomDistanceThreshold
+end
+
+-- ============================================
+-- FONCTION POUR OBTENIR UNE POSITION ALÉATOIRE DANS UNE AUTRE PIÈCE
+-- ============================================
+
+local function GetRandomRoomPosition()
+    local AllGifts = DebrisClient:GetChildren()
+    local ValidGifts = {}
+    
+    -- Récupère tous les cadeaux valides
+    for _, Gift in ipairs(AllGifts) do
+        if (Gift.Name == "GiftPrefab" and Gift:FindFirstChild("HitDetect")) then
+            local HitDetect = Gift:FindFirstChild("HitDetect")
+            if (HitDetect) then
+                local canGo = false
+                local ok, result = pcall(function()
+                    return CanGoTo(HitDetect.Position)
+                end)
+                if ok and result then
+                    canGo = true
+                end
+                if canGo then
+                    table.insert(ValidGifts, {
+                        Gift = Gift,
+                        Position = HitDetect.Position,
+                        Id = tostring(Gift)
+                    })
+                end
+            end
+        end
+    end
+    
+    -- Ajoute aussi les mineables
+    for _, Mineable in ipairs(Mineables:GetChildren()) do
+        if Mineable and Mineable:FindFirstChild("Highlight") then
+            local Highlight = Mineable:FindFirstChild("Highlight")
+            if Highlight then
+                local canGo = false
+                local ok, result = pcall(function()
+                    return CanGoTo(Highlight.Position)
+                end)
+                if ok and result then
+                    canGo = true
+                end
+                if canGo then
+                    table.insert(ValidGifts, {
+                        Gift = Mineable,
+                        Position = Highlight.Position,
+                        Id = "Mineable_" .. tostring(Mineable)
+                    })
+                end
+            end
+        end
+    end
+    
+    if (#ValidGifts == 0) then return nil end
+    
+    -- Filtrer pour éviter la même pièce (basé sur la distance)
+    local DifferentRooms = {}
+    for _, GiftData in ipairs(ValidGifts) do
+        local isSame = false
+        if LastRoomPosition then
+            if IsSameRoom(GiftData.Position, LastRoomPosition) then
+                isSame = true
+            end
+        end
+        if not isSame then
+            table.insert(DifferentRooms, GiftData)
+        end
+    end
+    
+    -- Si toutes les pièces sont identiques, prends une autre au hasard
+    if (#DifferentRooms == 0) then
+        DifferentRooms = ValidGifts
+    end
+    
+    -- Choisir un cadeau aléatoire
+    local RandomIndex = math.random(1, #DifferentRooms)
+    local SelectedGift = DifferentRooms[RandomIndex]
+    
+    -- Mettre à jour l'historique
+    table.insert(RoomHistory, SelectedGift.Position)
+    if (#RoomHistory > MaxRoomHistory) then
+        table.remove(RoomHistory, 1)
+    end
+    LastRoomPosition = SelectedGift.Position
+    CurrentRoomTarget = SelectedGift.Gift
+    
+    return SelectedGift.Position
+end
+
+-- ============================================
+-- FONCTION GETGIFTS
 -- ============================================
 
 local function GetGifts()
-    local Gifts = DebrisClient:GetChildren();
-    local Mdx = #Gifts;
-    for _ = 1, Mdx do
-        local Gift = Gifts[_];
-        if (not Gift) then break; end;
-        local canGo = false
-        local ok, result = pcall(function()
-            return CanGoTo(Gift.HitDetect.Position)
-        end)
-        if ok and result then
-            canGo = true
-        end
-        
-        if (Gift.Name ~= "GiftPrefab" or not Gift:FindFirstChild("Top") or not Gift:FindFirstChild("HitDetect") or not canGo) then
-            table.remove(Gifts, _);
-            _ = _ - 1;
-            Mdx = Mdx - 1;
-        end;
-    end;
-    return Gifts;
-end;
-
-local function GetGiftDistance(Gift)
-    if (not Gift) then return math.huge; end;
-    local HitDetect = Gift:FindFirstChild("HitDetect");
-    if (not HitDetect) then return math.huge; end;
-    local char = Player.Character
-    if not char then return math.huge end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return math.huge end
-    return (hrp.Position - HitDetect.Position).Magnitude;
-end;
-
--- ============================================
--- FONCTION getnearestgifts() - MIXTE (priorité au plus proche)
--- ============================================
-
-local function getnearestgifts()
-    local allTargets = {}
+    local Gifts = DebrisClient:GetChildren()
+    local Mdx = #Gifts
     
-    -- 1. Récupérer tous les Mineables disponibles
-    local mineables = Mineables:GetChildren()
-    for _, mineable in ipairs(mineables) do
-        if mineable and mineable:FindFirstChild("Highlight") then
+    for _ = 1, Mdx do
+        local Gift = Gifts[_]
+        if (not Gift) then break end
+        
+        if (Gift.Name ~= "GiftPrefab" or not Gift:FindFirstChild("Top") or not Gift:FindFirstChild("HitDetect")) then
+            table.remove(Gifts, _)
+            _ = _ - 1
+            Mdx = Mdx - 1
+        else
             local canGo = false
             local ok, result = pcall(function()
-                return CanGoTo(mineable.Highlight.Position)
+                return CanGoTo(Gift.HitDetect.Position)
             end)
             if ok and result then
                 canGo = true
             end
-            if canGo then
-                table.insert(allTargets, {
-                    instance = mineable,
-                    type = "mineable",
-                    hitDetect = mineable.Highlight
-                })
+            
+            if not canGo then
+                table.remove(Gifts, _)
+                _ = _ - 1
+                Mdx = Mdx - 1
             end
         end
     end
     
-    -- 2. Récupérer tous les cadeaux (GiftPrefab)
-    local gifts = GetGifts()
-    for _, gift in ipairs(gifts) do
-        if gift and gift:FindFirstChild("HitDetect") then
-            table.insert(allTargets, {
-                instance = gift,
-                type = "gift",
-                hitDetect = gift.HitDetect
-            })
+    return Gifts
+end
+
+local function GetGiftDistance(Gift)
+    if (not Gift) then return math.huge end
+    
+    local HitDetect = Gift:FindFirstChild("HitDetect")
+    if (not HitDetect) then return math.huge end
+    
+    local HRP = CachedHRP
+    if not HRP then
+        local char = Player.Character
+        if char then
+            HRP = char:FindFirstChild("HumanoidRootPart")
+            CachedHRP = HRP
         end
+        if not HRP then return math.huge end
     end
     
-    -- 3. Si aucun target trouvé
-    if #allTargets == 0 then
-        return nil, "aucun"
-    end
-    
-    -- 4. Trouver le plus proche (peu importe le type)
-    local char = Player.Character
-    if not char then return nil, "aucun" end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return nil, "aucun" end
-    
-    local closest = allTargets[1]
-    local closestDist = (hrp.Position - closest.hitDetect.Position).Magnitude
-    
-    for i = 2, #allTargets do
-        local target = allTargets[i]
-        local dist = (hrp.Position - target.hitDetect.Position).Magnitude
-        if dist < closestDist and dist > 4 then
-            closestDist = dist
-            closest = target
-        end
-    end
-    
-    return closest.instance, closest.type
-end;
+    return (HRP.Position - HitDetect.Position).Magnitude
+end
 
 -- ============================================
--- FONCTION GetNearestGift - MIXTE
+-- FONCTION GETNEARESTGIFT
 -- ============================================
 
 local function GetNearestGift()
-    local gift, type = getnearestgifts();
-    
-    if not gift then
-        return nil;
+    local Mineable = Mineables:GetChildren()[1]
+    if (Mineable and Mineable:FindFirstChild("Highlight")) then
+        local canGo = false
+        local ok, result = pcall(function()
+            return CanGoTo(Mineable.Highlight.Position)
+        end)
+        if ok and result then
+            canGo = true
+        end
+        if canGo then
+            return Mineable
+        end
     end
     
-    -- Récupérer le bon HitDetect selon le type
-    local HitDetect = nil
-    if type == "mineable" then
-        HitDetect = gift:FindFirstChild("Highlight")
-    elseif type == "gift" then
-        HitDetect = gift:FindFirstChild("HitDetect")
+    local Gifts = GetGifts()
+    if #Gifts == 0 then return nil end
+    
+    local ClosestGift = Gifts[1]
+    local ClosestDist = GetGiftDistance(ClosestGift)
+
+    for _ = 2, #Gifts do
+        local Gift = Gifts[_]
+        local Dist = GetGiftDistance(Gift)
+        if (Dist < ClosestDist and Dist > 4) then
+            ClosestDist = Dist
+            ClosestGift = Gift
+        end
     end
     
-    if not HitDetect or not HitDetect:IsA("BasePart") then 
-        return nil; 
-    end
-    
-    return gift;
-end;
+    return ((ClosestDist ~= math.huge) and ClosestGift)
+end
 
 -- ============================================
--- FONCTION GetNearestGiftDistance (pour debug)
+-- FONCTION GOTO
 -- ============================================
-
-local function GetNearestGiftDistance()
-    local gift, type = getnearestgifts();
-    if not gift then return math.huge, "aucun" end
-    
-    local char = Player.Character
-    if not char then return math.huge, type end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return math.huge, type end
-    
-    local HitDetect = nil
-    if type == "mineable" then
-        HitDetect = gift:FindFirstChild("Highlight")
-    elseif type == "gift" then
-        HitDetect = gift:FindFirstChild("HitDetect")
-    end
-    
-    if not HitDetect then return math.huge, type end
-    
-    return (hrp.Position - HitDetect.Position).Magnitude, type;
-end;
 
 local function Goto(Target, Gift)
+    local HRP = CachedHRP
+    if not HRP then
+        local char = Player.Character
+        if char then
+            HRP = char:FindFirstChild("HumanoidRootPart")
+            CachedHRP = HRP
+        end
+        if not HRP then return false end
+    end
+    
     local ok, result = pcall(function()
         local Path = PathfindingService:CreatePath({
             AgentCanClimb = true;
             WaypointSpacing = 1;
-        });
-        local HumanoidRootPart = Player.Character.HumanoidRootPart
-        Path:ComputeAsync(HumanoidRootPart.Position, Target);
-        return Path:GetWaypoints(HumanoidRootPart.Position);
+        })
+        Path:ComputeAsync(HRP.Position, Target)
+        return Path:GetWaypoints(HRP.Position)
     end)
     
-    if not ok then
-        return false
-    end
+    if not ok then return false end
     
     local Points = result
     if #Points == 0 then return false end
     
     for _ = 1, #Points do
-        if (not Points[_ + 1]) then break; end;
-        local New = Points[_].Position;
-        local Next = Points[_ + 1].Position;
-        local hrp = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
-        if not hrp then return false end
-        if ((hrp.Position - New).Magnitude > 10) then return false; end;
-        ImprovedTeleport(Vector3.new(New.X, math.max(Next.Y, New.Y) + 3, New.Z));
-    end;
+        if (not Points[_ + 1]) then break end
+        local New = Points[_].Position
+        local Next = Points[_ + 1].Position
+        
+        local currentHRP = CachedHRP
+        if not currentHRP then
+            local char = Player.Character
+            if char then
+                currentHRP = char:FindFirstChild("HumanoidRootPart")
+                CachedHRP = currentHRP
+            end
+            if not currentHRP then return false end
+        end
+        
+        if ((currentHRP.Position - New).Magnitude > 10) then return false end
+        ImprovedTeleport(Vector3.new(New.X, math.max(Next.Y, New.Y) + 3, New.Z))
+    end
 
-    ImprovedTeleport(Points[#Points].Position + Vector3.new(0, 3, 0));
+    if (#Points == 0) then return false end
+    ImprovedTeleport(Points[#Points].Position + Vector3.new(0, 3, 0))
     return true
-end;
+end
+
+-- ============================================
+-- VÉRIFICATION PERSONNAGE
+-- ============================================
 
 local function IsCharacterLoaded()
-    local char = Player.Character;
+    local char = Player.Character
     if not char then return false end
     if not char.Parent then return false end
-    local humanoid = char:FindFirstChild("Humanoid");
+    
+    local humanoid = char:FindFirstChild("Humanoid")
     if not humanoid or humanoid.Health == nil then return false end
     if humanoid.Health <= 0 then return false end
+    
     return char:FindFirstChild("HumanoidRootPart") ~= nil
 end
 
@@ -550,8 +677,6 @@ local function SendPeriodicReport(force)
     local timeSinceLastReport = currentTime - Stats.LastReportTime
     
     if not force and timeSinceLastReport < 300 then
-        local timeLeft = 300 - timeSinceLastReport
-        print(string.format("⏳ Prochain rapport dans %.0f secondes", timeLeft))
         return false
     end
     
@@ -563,11 +688,11 @@ local function SendPeriodicReport(force)
     
     local coins, coinsText = GetCoins()
     
-    local statusText = "✅ Actif"
+    local statusText = "Actif - Active"
     if IsDead then
-        statusText = "💀 Mort"
+        statusText = "Mort - Dead"
     elseif not IsScriptRunning then
-        statusText = "❌ Arrêté"
+        statusText = "Arrêté - Stopped."
     end
     
     local formattedCoins = tostring(coins)
@@ -577,26 +702,27 @@ local function SendPeriodicReport(force)
     
     local giftsMessage = ""
     if Stats.GiftsThisPeriod > 0 then
-        giftsMessage = string.format("🎁 **Cadeaux/Mineables cette période:** %d\n", Stats.GiftsThisPeriod)
+        giftsMessage = string.format("**Cadeaux/Mineables cette période:** %d\n", Stats.GiftsThisPeriod)
     else
-        giftsMessage = "🎁 **Cadeaux/Mineables cette période:** 0 (aucun)\n"
+        giftsMessage = "**Cadeaux/Mineables cette période:** 0 (aucun)\n"
     end
     
     local message = string.format(
-        "**📊 RAPPORT - 5 MINUTES**\n\n" ..
-        "👤 **Joueur:** %s\n" ..
-        "🆔 **Server:** %s\n\n" ..
-        "📊 **STATISTIQUES:**\n" ..
+        "**RAPPORT - 5 MINUTES**\n\n" ..
+        " **Joueur:** %s\n" ..
+        " **Server:** %s\n\n" ..
+        " **STATISTIQUES:**\n" ..
         "%s" ..
-        "🎁 **Total cumulé:** %d\n" ..
-        "💰 **Pièces:** %s\n" ..
-        "⏱️ **Temps joué:** %.1fh\n" ..
-        "💀 **Morts:** %d\n" ..
-        "🚪 **Kicks:** %d\n" ..
-        "🌐 **Erreurs réseau:** %d\n" ..
-        "🔄 **Reconnections:** %d\n\n" ..
-        "📡 **Status:** %s\n" ..
-        "⏰ **Heure:** %s",
+        " **Total cumulé:** %d\n" ..
+        " **Pièces:** %s\n" ..
+        " **Temps joué:** %.1fh\n" ..
+        " **Morts:** %d\n" ..
+        " **Kicks:** %d\n" ..
+        " **Erreurs réseau:** %d\n" ..
+        " **Reconnections:** %d\n" ..
+        " **Changements de pièce:** %d\n\n" ..
+        " **Status:** %s\n" ..
+        " **Heure:** %s",
         playerName,
         serverId,
         giftsMessage,
@@ -607,190 +733,184 @@ local function SendPeriodicReport(force)
         Stats.KickCount or 0,
         Stats.NetworkErrors or 0,
         Stats.RejoinCount or 0,
+        Stats.RoomSwitches or 0,
         statusText,
         GetLocalTime()
     )
     
-    print(string.format("📊 ENVOI DU RAPPORT - Pièces: %s, Cadeaux/Mineables période: %d", formattedCoins, Stats.GiftsThisPeriod))
-    
     local success = SendWebhook(
         message,
         WebhookConfig.Colors.Stats,
-        "📊 Rapport 5 Minutes",
+        "Rapport 5 Minutes",
         nil,
         false
     )
     
     if success then
-        print("✅ Rapport envoyé avec succès !")
         Stats.GiftsThisPeriod = 0
-    else
-        print("❌ Échec de l'envoi du rapport !")
     end
     
     return success
 end
 
 -- ============================================
--- FONCTION PRINCIPALE DE FARM (SANS AUCUN DELAI)
+-- FONCTION PRINCIPALE DE FARM (ZÉRO DÉLAI)
 -- ============================================
 
 local function FarmGift()
-    -- Vérifier si le personnage est toujours valide
-    if IsCharacterChanging then
-        return
-    end
-    
+    -- === 1. METTRE À JOUR LE CACHE ===
     local char = Player.Character
-    if not char then 
-        return 
+    if char then
+        CachedCharacter = char
+        CachedHRP = char:FindFirstChild("HumanoidRootPart")
     end
     
-    local humanoid = char:FindFirstChild("Humanoid")
+    -- === 2. VÉRIFICATIONS RAPIDES ===
+    if IsCharacterChanging then return end
+    
+    if not CachedCharacter then return end
+    
+    local humanoid = CachedCharacter:FindFirstChild("Humanoid")
     if not humanoid then return end
     
-    if humanoid.Health <= 0 or humanoid:GetState() == Enum.HumanoidStateType.Dead then
+    if humanoid.Health <= 0 then
         if not IsDead then
             IsDead = true
             Stats.DeathCount = (Stats.DeathCount or 0) + 1
-            print("💀 Joueur mort ! Attente du respawn...")
-            SendWebhook(
-                "💀 **Joueur mort !**\nAttente du respawn...",
-                WebhookConfig.Colors.Death,
-                "💀 Mort",
-                nil,
-                WebhookConfig.PingConfig.OnDeath
-            )
         end
         return
     end
     
     if IsDead then
         IsDead = false
-        print("✅ Joueur réanimé !")
     end
     
-    if not char:FindFirstChild("HumanoidRootPart") then
-        return
+    if not CachedHRP then return end
+    
+    -- === 3. GESTION DES CHANGEMENTS DE PIÈCE ===
+    local currentTime = tick()
+    
+    -- Incrémenter le compteur de changements
+    RoomSwitchCount = RoomSwitchCount + 1
+    
+    -- On change de pièce à chaque fois (MaxSwitches = 1)
+    if (RoomSwitchCount >= MaxSwitches) then
+        RoomSwitchCount = 0
+        LastRoomPosition = nil -- Force un changement de pièce
+        ForceRoomChange = true
+        Stats.RoomSwitches = (Stats.RoomSwitches or 0) + 1
     end
     
-    if humanoid:GetState() == Enum.HumanoidStateType.FallingDown then
-        return -- PAS DE DELAI
+    -- Changement de pièce à chaque appel (pas de condition de modulo)
+    if ForceRoomChange and currentTime - RoomChangeCooldown > RoomChangeCooldownTime then
+        -- Essaie d'obtenir une position dans une autre pièce
+        local RandomPos = GetRandomRoomPosition()
+        
+        if RandomPos then
+            RoomChangeCooldown = currentTime
+            ForceRoomChange = false
+            local distance = (CachedHRP.Position - RandomPos).Magnitude
+            local Gift = GetNearestGift()
+            if (Gift and Goto(RandomPos, Gift)) then
+                -- Succès du déplacement vers une autre pièce
+                return
+            end
+        else
+            -- Si aucune autre pièce n'est disponible, on réinitialise
+            ForceRoomChange = false
+        end
     end
     
-    -- UTILISATION DE GetNearestGift (MIXTE)
-    local Gift = GetNearestGift();
-    if not Gift then 
-        return; 
-    end;
+    -- === 4. RÉCUPÉRER LE GIFT LE PLUS PROCHE ===
+    local Gift = GetNearestGift()
+    if (not Gift) then return end
     
-    -- Détection du type de gift pour choisir le bon HitDetect
-    local HitDetect = Gift:FindFirstChild("HitDetect") or Gift:FindFirstChild("Highlight");
-    if not HitDetect or not HitDetect:IsA("BasePart") then 
-        return; 
-    end;
+    -- === 5. RÉCUPÉRER LE HITDETECT ===
+    local HitDetect = Gift:FindFirstChild("HitDetect") or Gift:FindFirstChild("Highlight")
+    if (not HitDetect or not HitDetect:IsA("BasePart")) then return end
     
-    local success = Goto(HitDetect.Position, Gift)
-    if success then
+    -- === 6. ALLER VERS LE GIFT ===
+    if (Goto(HitDetect.Position, Gift) and Gift.Name ~= "GiftPrefab") then
         Stats.GiftsCollected = Stats.GiftsCollected + 1
         Stats.GiftsThisPeriod = Stats.GiftsThisPeriod + 1
-        -- AUCUN DELAI ICI
-    end;
-end;
+    end
+end
 
 -- ============================================
--- BOUCLE PRINCIPALE DE FARM (SANS AUCUN DELAI)
+-- BOUCLE PRINCIPALE (ZÉRO DÉLAI)
 -- ============================================
 
 local MainLoopThread = nil
+local loopCounter = 0
 
 function StartMainLoop()
-    -- Anti-doublon
     if IsScriptRunning then
-        print("⚠️ Script déjà en cours, ignoré")
+        print("Script déjà en cours, ignoré - Script already running, ignored.")
         return
     end
     
     if IsRestarting then
-        print("⚠️ Redémarrage en cours, ignoré")
+        print("Redémarrage en cours, ignoré - restart in progress, ignored.")
         return
     end
     
     if IsCharacterChanging then
-        print("⚠️ Changement de personnage en cours, ignoré")
+        print("Changement de personnage en cours, ignoré - Changing character in progress, ignored.")
         return
     end
     
     if not IsCharacterLoaded() then
-        print("⚠️ Personnage non chargé, attente...")
+        print("Personnage non chargé, attente... - character not loaded, waiting...")
         return
     end
     
-    -- Marquer comme en cours
     IsScriptRunning = true
     IsDead = false
+    _G.NeedRestart = false
     
-    print("✅ Script démarré en mode MIXTE (SANS AUCUN DELAI) !")
+    print("Script démarré - Script started.")
     
-    local timeSinceLastReport = tick() - Stats.LastReportTime
-    if timeSinceLastReport < 300 then
-        local timeLeft = 300 - timeSinceLastReport
-        print(string.format("⏳ Prochain rapport dans %.0f secondes", timeLeft))
-    else
-        print("⏳ Un rapport va être envoyé prochainement")
-    end
-    
-    -- Annuler l'ancien thread
     if MainLoopThread then
         task.cancel(MainLoopThread)
         MainLoopThread = nil
     end
     
     MainLoopThread = task.spawn(function()
-        local loopCount = 0
-        while IsScriptRunning do
-            -- Attendre UNIQUEMENT le heartbeat (pas de wait supplémentaires)
-            RunService.Heartbeat:Wait();
+        loopCounter = 0
+        _G.TMMXFarm = true
+        
+        -- BOUCLE PRINCIPALE - AUCUN DELAI
+        while (_G.TMMXFarm) do
+            -- SEUL Heartbeat:Wait() EST OBLIGATOIRE
+            RunService.Heartbeat:Wait()
             
-            if not Players:FindFirstChild(Player.Name) then
-                print("🚪 Joueur disparu - Arrêt du script")
-                IsScriptRunning = false
-                break
-            end
+            -- APPEL DIRECT - PAS DE pcall POUR VITESSE
+            FarmGift()
             
-            -- Si le personnage a changé, on arrête proprement
-            if IsCharacterChanging then
-                print("🔄 Personnage en cours de changement - Arrêt du script")
-                IsScriptRunning = false
-                break
-            end
+            loopCounter = loopCounter + 1
             
-            local success, err = pcall(FarmGift);
-            if not success then
-                if not string.find(tostring(err), "PathfindingService") and not string.find(tostring(err), "Workspace") then
-                    print("❌ Erreur FarmGift:", err)
-                end
-                -- PAS DE DELAI ICI
-            end
-            
-            loopCount = loopCount + 1
-            
-            if loopCount % 10 == 0 then
+            -- Statistiques tous les 10 tours (pas de délai)
+            if loopCounter % 10 == 0 then
                 GetCoins()
             end
             
-            if tick() - Stats.LastReportTime >= 300 then
-                SendPeriodicReport(false)
+            -- Rapport toutes les 30 secondes (pas de délai)
+            if loopCounter % 30 == 0 then
+                if tick() - Stats.LastReportTime >= 300 then
+                    SendPeriodicReport(false)
+                end
             end
         end
+        
         IsScriptRunning = false
         MainLoopThread = nil
-        print("🛑 Script arrêté")
+        print("Script arrêté. - Script stopped.")
     end)
 end
 
 function StopScript()
-    print("🛑 Arrêt du script...")
+    print("Arrêt du script... - stopping script...")
+    _G.TMMXFarm = false
     IsScriptRunning = false
     IsDead = false
     
@@ -799,26 +919,25 @@ function StopScript()
         MainLoopThread = nil
     end
     
-    print("✅ Script arrêté")
-    print(string.format("📊 Stats sauvegardées: %d cadeaux/mineables au total", Stats.GiftsCollected))
+    print("Script arrêté - Script stopped.")
+    print(string.format("Stats: %d collectés au total", Stats.GiftsCollected))
 end
 
 function RestartScript()
-    -- Anti-doublon
     if IsRestarting then
-        print("⚠️ Redémarrage déjà en cours, ignoré")
+        print("Redémarrage déjà en cours, ignoré - Restart already in progress. ignored.")
         return
     end
     
     if IsCharacterChanging then
-        print("⚠️ Changement de personnage en cours, ignoré")
+        print("⚠️ Changement de personnage en cours, ignoré - changing character in progress")
         return
     end
     
     IsRestarting = true
     print("🔄 Redémarrage du script...")
     
-    -- Arrêter proprement
+    _G.TMMXFarm = false
     IsScriptRunning = false
     if MainLoopThread then
         task.cancel(MainLoopThread)
@@ -827,7 +946,6 @@ function RestartScript()
     
     task.wait(1)
     
-    -- Attendre que le personnage soit chargé
     local attempts = 0
     while attempts < 30 and not IsCharacterLoaded() do
         task.wait(0.2)
@@ -835,7 +953,7 @@ function RestartScript()
     end
     
     if IsCharacterLoaded() then
-        -- Réinitialiser l'état
+        _G.TMMXFarm = true
         IsScriptRunning = false
         IsDead = false
         StartMainLoop()
@@ -847,19 +965,18 @@ function RestartScript()
 end
 
 -- ============================================
--- GESTION CHARACTERADDED (arrête puis relance)
+-- GESTION CHARACTERADDED
 -- ============================================
 
 if Player.CharacterAdded then
     Player.CharacterAdded:Connect(function(character)
         print("🔄 NOUVEAU PERSONNAGE DÉTECTÉ !")
         
-        -- Marquer le changement de personnage
         IsCharacterChanging = true
         
-        -- ARRÊTER COMPLÈTEMENT LE SCRIPT
         if IsScriptRunning then
             print("🛑 Arrêt du script en cours...")
+            _G.TMMXFarm = false
             IsScriptRunning = false
             if MainLoopThread then
                 task.cancel(MainLoopThread)
@@ -867,18 +984,13 @@ if Player.CharacterAdded then
             end
         end
         
-        -- Réinitialiser l'état de mort
         IsDead = false
         
-        print("⏳ Attente du chargement du nouveau personnage...")
-        
-        -- Attendre que le personnage soit vraiment prêt
+        print("⏳ Attente du chargement...")
         task.wait(2)
         
-        -- Attendre que le Humanoid soit présent
         local humanoid = character:WaitForChild("Humanoid", 5)
         if humanoid then
-            -- Attendre que le personnage soit complètement chargé
             local waitTime = 0
             while waitTime < 30 and not IsCharacterLoaded() do
                 task.wait(0.2)
@@ -886,22 +998,15 @@ if Player.CharacterAdded then
             end
         end
         
-        -- Fin du changement de personnage
         IsCharacterChanging = false
         
-        -- Vérifier si le personnage est chargé et prêt
         if IsCharacterLoaded() then
             print("✅ Nouveau personnage chargé !")
-            
-            -- Attendre un peu pour que tout se stabilise
             task.wait(1)
-            
-            -- RELANCER LE SCRIPT
-            if not IsScriptRunning and not IsRestarting then
-                print("🔄 Relance du script avec le nouveau personnage...")
+            if not IsScriptRunning and not IsRestarting and _G.AutoFarmEnabled then
+                print("🔄 Relance du script...")
+                _G.TMMXFarm = true
                 StartMainLoop()
-            else
-                print("⚠️ Script déjà en cours ou redémarrage en cours")
             end
         else
             print("⚠️ Nouveau personnage pas complètement chargé")
@@ -910,10 +1015,9 @@ if Player.CharacterAdded then
 end
 
 -- ============================================
--- ========== AUTO-REJOIN INTELLIGENT ==========
+-- AUTO-REJOIN ROBUSTE
 -- ============================================
 
--- Variables pour l'auto-rejoin
 local RejoinActive = true
 local IsReconnecting = false
 local RejoinAttempts = 0
@@ -922,10 +1026,6 @@ local RejoinDelay = 5
 local LastPopupCheck = 0
 local PopupCheckCooldown = 0.3
 local CachedPopup = false
-
--- ============================================
--- DÉTECTION DE DÉCONNEXION
--- ============================================
 
 local function HasSystemError()
     local guiService = GuiService
@@ -1037,10 +1137,6 @@ local function IsDisconnected()
     return false
 end
 
--- ============================================
--- FONCTION REJOIN
--- ============================================
-
 local function Rejoin()
     if IsReconnecting then
         print("⏳ Déjà en reconnection...")
@@ -1062,6 +1158,10 @@ local function Rejoin()
     
     print(string.format("🔄 Reconnection - Tentative %d", RejoinAttempts))
     print("📡 Téléportation vers le jeu...")
+    
+    _G.NeedRestart = true
+    _G.AutoFarmEnabled = true
+    _G.TMMXFarm = true
     
     SendWebhook(
         string.format("🔄 **Tentative de reconnection #%d**", RejoinAttempts),
@@ -1106,7 +1206,6 @@ local function Rejoin()
             continue
         end
         
-        -- Vérifier si le jeu est chargé
         if IsCharacterLoaded() and game:IsLoaded() then
             print("✅ Reconnection réussie !")
             Stats.RejoinCount = (Stats.RejoinCount or 0) + 1
@@ -1120,8 +1219,8 @@ local function Rejoin()
             IsReconnecting = false
             RejoinAttempts = 0
             
-            -- Redémarrer le farming si arrêté (avec anti-doublon)
-            if not IsScriptRunning and not IsRestarting and not IsCharacterChanging then
+            _G.TMMXFarm = true
+            if not IsScriptRunning and not IsRestarting and not IsCharacterChanging and _G.AutoFarmEnabled then
                 print("🔄 Redémarrage du farming...")
                 task.wait(2)
                 StartMainLoop()
@@ -1137,10 +1236,9 @@ local function Rejoin()
 end
 
 -- ============================================
--- SURVEILLANCE AUTO-REJOIN (en arrière-plan)
+-- SURVEILLANCE AUTO-REJOIN
 -- ============================================
 
--- Détection des erreurs via GuiService
 local LastErrorTime = 0
 
 GuiService.ErrorMessageChanged:Connect(function(errorMessage)
@@ -1162,7 +1260,6 @@ GuiService.ErrorMessageChanged:Connect(function(errorMessage)
            string.find(lowerMsg, "http error") or
            string.find(lowerMsg, "raiseteleportinitfailedevent") then
             
-            -- Ne pas rejoin si mort ou changement de perso
             if not IsDead and not IsReconnecting and RejoinActive and not IsCharacterChanging then
                 print("🔄 Lancement auto-rejoin dans 2 secondes...")
                 task.wait(2)
@@ -1172,10 +1269,9 @@ GuiService.ErrorMessageChanged:Connect(function(errorMessage)
     end
 end)
 
--- Surveillance périodique
 task.spawn(function()
     while true do
-        task.wait(5)
+        task.wait(3)
         
         if IsReconnecting or not RejoinActive or IsDead or IsCharacterChanging then
             continue
@@ -1195,7 +1291,6 @@ task.spawn(function()
     end
 end)
 
--- Si le joueur est retiré (kick ou leave)
 Players.PlayerRemoving:Connect(function(player)
     if player == Player and not IsReconnecting and RejoinActive and not IsDead and not IsCharacterChanging then
         print("🚪 Joueur en train de quitter...")
@@ -1203,10 +1298,6 @@ Players.PlayerRemoving:Connect(function(player)
         Rejoin()
     end
 end)
-
--- ============================================
--- DÉTECTION DE KICK (pour statistiques et webhook)
--- ============================================
 
 if GuiService then
     GuiService.ErrorMessageChanged:Connect(function(errorMessage)
@@ -1231,15 +1322,38 @@ if GuiService then
 end
 
 -- ============================================
+-- BOUCLE DE SURVIE
+-- ============================================
+
+task.spawn(function()
+    while true do
+        task.wait(2)
+        
+        if _G.AutoFarmEnabled and not IsScriptRunning and not IsRestarting and not IsCharacterChanging then
+            if IsCharacterLoaded() then
+                print("🔄 Redémarrage automatique (boucle de survie)")
+                _G.TMMXFarm = true
+                StartMainLoop()
+            else
+                task.wait(5)
+            end
+        end
+        
+        if not Players:FindFirstChild(Player.Name) and not IsReconnecting and RejoinActive then
+            print("⚠️ Joueur perdu, rejoin...")
+            Rejoin()
+        end
+    end
+end)
+
+-- ============================================
 -- COMMANDES
 -- ============================================
 
--- Farming commands
 _G.StartFarming = StartMainLoop
 _G.StopFarming = StopScript
 _G.RestartFarming = RestartScript
 
--- Webhook commands
 _G.SetWebhook = function(url)
     if not url or url == "" then
         print("❌ URL invalide !")
@@ -1296,7 +1410,6 @@ _G.TestPing = function()
     print(success and "✅ Test ping réussi !" or "❌ Test ping échoué !")
 end
 
--- Auto-rejoin commands
 _G.Rejoin = function()
     if IsReconnecting then
         print("⚠️ Déjà en reconnection")
@@ -1324,37 +1437,22 @@ _G.CheckPopup = function()
     return hasPopup
 end
 
--- ============================================
--- COMMANDES GETNEARESTGIFTS (MIXTE)
--- ============================================
-
 _G.GetNearestGiftInfo = function()
-    local gift, type = getnearestgifts();
+    local gift = GetNearestGift()
     if not gift then
-        print("❌ Aucun target disponible (Mineable ou Gift)")
+        print("❌ Aucun target disponible")
         return
     end
     
-    local distance, detectedType = GetNearestGiftDistance()
-    print(string.format("🎯 Target le plus proche:"))
-    print(string.format("  Type: %s", type or detectedType))
-    print(string.format("  Distance: %.2f studs", distance or 0))
-    if gift and gift.Name then
-        print(string.format("  Nom: %s", gift.Name))
-    end
-    if gift and gift.Parent then
-        print(string.format("  Parent: %s", gift.Parent.Name))
-    end
-end
-
-_G.ForceMineable = function()
-    local mineable = Mineables:GetChildren()[1]
-    if mineable then
-        print("✅ Mineable trouvé: " .. mineable.Name)
-        return mineable
-    else
-        print("❌ Aucun Mineable disponible")
-        return nil
+    local HitDetect = gift:FindFirstChild("HitDetect") or gift:FindFirstChild("Highlight")
+    if HitDetect then
+        local HRP = CachedHRP
+        local dist = 0
+        if HRP then
+            dist = (HRP.Position - HitDetect.Position).Magnitude
+        end
+        print(string.format("🎯 Target: %s", gift.Name))
+        print(string.format("  Distance: %.2f studs", dist))
     end
 end
 
@@ -1372,17 +1470,16 @@ _G.ListAllMineables = function()
     print(string.format("📋 %d mineables disponibles:", #mineables))
     for i, mineable in ipairs(mineables) do
         if mineable and mineable:FindFirstChild("Highlight") then
-            local char = Player.Character
+            local HRP = CachedHRP
             local dist = math.huge
-            if char and char:FindFirstChild("HumanoidRootPart") then
-                dist = (char.HumanoidRootPart.Position - mineable.Highlight.Position).Magnitude
+            if HRP then
+                dist = (HRP.Position - mineable.Highlight.Position).Magnitude
             end
             print(string.format("  %d. %s - Distance: %.2f", i, mineable.Name or "Sans nom", dist))
         end
     end
 end
 
--- Status global (fusionné avec infos getnearestgifts)
 _G.Status = function()
     local timeSinceLastReport = tick() - Stats.LastReportTime
     local timeLeft = math.max(0, 300 - timeSinceLastReport)
@@ -1391,26 +1488,22 @@ _G.Status = function()
     local disconnected = IsDisconnected()
     local onScreen = IsOnDisconnectScreen()
     
-    -- Infos getnearestgifts
-    local gift, type = getnearestgifts()
-    local giftDist = 0
-    if gift then
-        local dist, _ = GetNearestGiftDistance()
-        giftDist = dist
-    end
-    
-    print("=== STATUT GLOBAL ===")
+    print("=== STATUT GLOBAL ULTRA RAPIDE V7 ===")
     print("Script farming: " .. tostring(IsScriptRunning))
+    print("TMMXFarm: " .. tostring(_G.TMMXFarm))
+    print("AutoFarmEnabled: " .. tostring(_G.AutoFarmEnabled))
+    print("NeedRestart: " .. tostring(_G.NeedRestart))
     print("💀 Mort: " .. tostring(IsDead))
     print("🔄 Redémarrage en cours: " .. tostring(IsRestarting))
     print("🔄 Changement personnage: " .. tostring(IsCharacterChanging))
     print("Personnage chargé: " .. tostring(IsCharacterLoaded()))
-    print("🎁 Total collectés (Mineables + Gifts): " .. Stats.GiftsCollected)
+    print("🎁 Total collectés: " .. Stats.GiftsCollected)
     print("🎁 Collectés cette période: " .. Stats.GiftsThisPeriod)
     print("💀 Morts: " .. (Stats.DeathCount or 0))
     print("🔄 Reconnections: " .. (Stats.RejoinCount or 0))
     print("🚪 Kicks: " .. (Stats.KickCount or 0))
     print("🌐 Erreurs réseau: " .. (Stats.NetworkErrors or 0))
+    print("🔄 Changements de pièce: " .. (Stats.RoomSwitches or 0))
     print("💰 Pièces: " .. text)
     print("⏳ Prochain rapport dans: " .. string.format("%.0f secondes", timeLeft))
     print("--- Auto-Rejoin ---")
@@ -1420,12 +1513,40 @@ _G.Status = function()
     print("Popup erreur: " .. tostring(hasPopup))
     print("Écran déconnexion: " .. tostring(onScreen))
     print("Déconnecté: " .. tostring(disconnected))
-    print("--- GetNearestGifts (MIXTE) ---")
-    print("Target disponible: " .. tostring(gift ~= nil))
-    if gift then
-        print("Type: " .. tostring(type or "inconnu"))
-        print("Distance: " .. string.format("%.2f studs", giftDist))
-        print("Nom: " .. tostring(gift.Name))
+    print("--- Cache ---")
+    print("HRP: " .. tostring(CachedHRP ~= nil))
+    print("--- Gestion des pièces ---")
+    print("Compteur de changements: " .. RoomSwitchCount .. "/" .. MaxSwitches)
+    print("Dernière position pièce: " .. tostring(LastRoomPosition and "Oui" or "Non"))
+    print("Historique: " .. #RoomHistory .. " positions")
+    print("Seuil de distance pour même pièce: " .. RoomDistanceThreshold .. " studs")
+    print("Mode: Changement de pièce à chaque fois (pas d'aller-retour)")
+end
+
+_G.ResetRoomHistory = function()
+    RoomHistory = {}
+    LastRoomPosition = nil
+    RoomSwitchCount = 0
+    CurrentRoomTarget = nil
+    ForceRoomChange = true
+    print("✅ Historique des pièces réinitialisé")
+end
+
+_G.SetMaxRoomSwitches = function(count)
+    if count and type(count) == "number" and count > 0 then
+        MaxSwitches = count
+        print("✅ Nombre de changements avant nouvelle pièce: " .. count)
+    else
+        print("❌ Valeur invalide, utilisez un nombre > 0")
+    end
+end
+
+_G.SetRoomDistanceThreshold = function(distance)
+    if distance and type(distance) == "number" and distance > 0 then
+        RoomDistanceThreshold = distance
+        print("✅ Seuil de distance pour même pièce: " .. distance .. " studs")
+    else
+        print("❌ Valeur invalide, utilisez un nombre > 0")
     end
 end
 
@@ -1434,16 +1555,20 @@ end
 -- ============================================
 
 print("========================================")
-print("    SCRIPT DE FARMING COMPLET V3")
-print("    MODE MIXTE (MINEABLES + GIFTS)")
-print("    PRIORITÉ AU PLUS PROCHE")
-print("    SANS AUCUN DELAI")
+print("    SCRIPT ULTRA RAPIDE V7")
+print("    VERSION COMPLÈTE - ZÉRO DÉLAI")
 print("========================================")
 
 print("🌐 Vérification initiale...")
 task.wait(2)
 
--- Vérifier si le personnage est déjà mort au démarrage
+if _G.NeedRestart then
+    print("🔄 Redémarrage demandé après rejoin")
+    _G.NeedRestart = false
+    _G.AutoFarmEnabled = true
+    _G.TMMXFarm = true
+end
+
 local char = Player.Character
 if char then
     local humanoid = char:FindFirstChild("Humanoid")
@@ -1453,21 +1578,23 @@ if char then
     end
 end
 
-print("⏳ Attente initiale de 3 secondes...")
-task.wait(3)
+print("⏳ Attente initiale de 2 secondes...")
+task.wait(2)
 
 if IsDisconnected() then
     print("⚠️ Déconnecté au démarrage, lancement du rejoin...")
     task.wait(2)
     Rejoin()
 elseif IsCharacterLoaded() then
-    print("✅ Jeu chargé, démarrage du farming en mode MIXTE (SANS DELAI)...")
+    print("✅ Jeu chargé, démarrage du farming en mode ULTRA RAPIDE...")
+    _G.TMMXFarm = true
     StartMainLoop()
 else
     print("⏳ Jeu en cours de chargement...")
     task.wait(5)
     if IsCharacterLoaded() then
         print("✅ Jeu chargé !")
+        _G.TMMXFarm = true
         StartMainLoop()
     else
         print("⚠️ Jeu pas complètement chargé, attente de CharacterAdded...")
@@ -1487,11 +1614,10 @@ print("  _G.Status() - Voir l'état détaillé")
 print("  _G.GetCoins() - Voir les pièces")
 print("  _G.SendReport() - Rapport manuel")
 print("========================================")
-print("📌 COMMANDES GETNEARESTGIFTS (MIXTE):")
-print("  _G.GetNearestGiftInfo() - Info du target le plus proche")
-print("  _G.ForceMineable() - Forcer la recherche Mineable")
-print("  _G.ListAllGifts() - Lister tous les cadeaux")
-print("  _G.ListAllMineables() - Lister tous les mineables")
+print("📌 COMMANDES AUTO-EXECUTION:")
+print("  _G.keepiy() - Activer auto-execution")
+print("  _G.unkeepiy() - Désactiver auto-execution")
+print("  _G.togglekeepiy() - Basculer auto-execution")
 print("========================================")
 print("📌 COMMANDES AUTO-REJOIN:")
 print("  _G.Rejoin() - Forcer une reconnection")
@@ -1507,29 +1633,37 @@ print("  _G.SetDiscordID(id) - Configurer ID Discord")
 print("  _G.DisableWebhook() - Désactiver webhook")
 print("  _G.EnableWebhook() - Activer webhook")
 print("========================================")
-print("✅ OPTIMISATION :")
-print("  - Collecte les MINEABLES et les GIFTS")
-print("  - Priorité au plus proche (peu importe le type)")
-print("  - AUCUN DELAI (pas de wait, pas de task.wait)")
-print("  - Heartbeat uniquement pour la boucle")
+print("📌 COMMANDES GETNEAREST:")
+print("  _G.GetNearestGiftInfo() - Info du target le plus proche")
+print("  _G.ListAllGifts() - Lister tous les cadeaux")
+print("  _G.ListAllMineables() - Lister tous les mineables")
+print("========================================")
+print("📌 COMMANDES GESTION PIÈCES:")
+print("  _G.ResetRoomHistory() - Réinitialiser l'historique")
+print("  _G.SetMaxRoomSwitches(n) - Définir le nombre de changements")
+print("  _G.SetRoomDistanceThreshold(n) - Définir seuil distance (défaut: 150)")
+print("========================================")
+print("✅ OPTIMISATIONS ULTRA RAPIDE :")
+print("  - Cache des références (HRP, Character)")
+print("  - TeleportSpeed = 11.5")
+print("  - Pas de pcall dans la boucle")
+print("  - Pas de wait() dans FarmGift")
+print("  - Heartbeat uniquement")
+print("  - ZÉRO DÉLAI DANS LA BOUCLE")
+print("  - Changement de pièce à chaque fois (pas d'aller-retour)")
+print("  - Détection des pièces par distance (seuil: " .. RoomDistanceThreshold .. " studs)")
 print("========================================")
 
 -- ============================================
--- BOUCLE DE SURVIE (avec anti-doublon)
+-- BOUCLE DE SURVIE FINALE
 -- ============================================
 
 while true do
-    task.wait(5)
+    task.wait(3)
     
-    -- Ne relancer que si :
-    -- 1. Le script n'est pas en cours
-    -- 2. Le joueur n'est pas mort
-    -- 3. Le personnage est chargé
-    -- 4. Pas en reconnection
-    -- 5. Pas en redémarrage
-    -- 6. Pas en changement de personnage
-    if not IsScriptRunning and not IsDead and IsCharacterLoaded() and not IsReconnecting and not IsRestarting and not IsCharacterChanging then
+    if not IsScriptRunning and not IsDead and IsCharacterLoaded() and not IsReconnecting and not IsRestarting and not IsCharacterChanging and _G.AutoFarmEnabled then
         print("🔄 Redémarrage automatique du farming (boucle de survie)...")
+        _G.TMMXFarm = true
         StartMainLoop()
     end
     
